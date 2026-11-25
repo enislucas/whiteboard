@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="ar" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>السبورة</title>
+<meta name="description" content="A simple touch whiteboard: pen in three colours, eraser, undo, redo and fullscreen.">
+<meta name="theme-color" content="#f5f4f0">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23f5f4f0'/%3E%3Cg transform='rotate(-45 32 32)'%3E%3Cpath d='M4 32 13 28v8z' fill='%2315803d'/%3E%3Cpath d='M12 27.5 21 23.5v17l-9-4z' fill='%23c9ced6'/%3E%3Crect x='20' y='22' width='38' height='20' rx='4' fill='%2315803d'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700&display=swap" media="print" onload="this.media='all'">
+<style>
+  :root {
+    --u: clamp(11px, 0.82vw, 26px);
+    --bar: #f5f4f0;
+    --bar-line: #dedbd3;
+    --ink: #1d2026;
+    --muted: #535963;
+    --accent: #2563eb;
+    --accent-soft: #e2ebfd;
+    --press: #e8e6df;
+    --font: "Cairo", "Segoe UI", Tahoma, "Noto Sans Arabic", Arial, sans-serif;
+  }
+  @media (max-width: 760px) { :root { --u: 2.2vw; } }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  [hidden] { display: none !important; }
+  html, body {
+    height: 100%; overflow: hidden; background: #fff;
+    overscroll-behavior: none; touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+  }
+  body { position: fixed; inset: 0; display: flex; flex-direction: column; font-family: var(--font); color: var(--ink); }
+
+  /* ---------- top bar ---------- */
+  #bar {
+    flex: none; display: flex; justify-content: center; align-items: stretch;
+    gap: calc(var(--u) * 1.1);
+    padding: calc(var(--u) * 0.45) calc(var(--u) * 1);
+    padding-top: calc(var(--u) * 0.45 + env(safe-area-inset-top));
+    background: var(--bar); border-bottom: 1px solid var(--bar-line);
+  }
+  .group { display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: calc(var(--u) * 0.3); }
+  .sep { width: 1px; background: var(--bar-line); margin: calc(var(--u) * 0.35) 0; }
+
+  button {
+    font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer;
+    border-radius: calc(var(--u) * 0.6);
+    display: flex; align-items: center; justify-content: center;
+    transition: background-color .12s, transform .08s, box-shadow .12s;
+  }
+  button:active:not(:disabled) { transform: scale(0.94); }
+  button:focus { outline: none; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (hover: hover) { button:hover:not(:disabled) { background-color: var(--press); } }
+  svg { display: block; flex: none; }
+
+  .big { height: calc(var(--u) * 2.9); padding: 0 calc(var(--u) * 0.8); gap: calc(var(--u) * 0.5); direction: rtl; }
+  .big svg { width: calc(var(--u) * 2.3); height: calc(var(--u) * 2.3); }
+  .big span { font-size: calc(var(--u) * 1.15); font-weight: 700; line-height: 1; white-space: nowrap; }
+
+  .row { display: flex; align-items: center; gap: calc(var(--u) * 0.4); height: calc(var(--u) * 2.3); }
+  .small { height: 100%; padding: 0 calc(var(--u) * 0.55); gap: calc(var(--u) * 0.3); direction: rtl; color: var(--muted); }
+  .small svg { width: calc(var(--u) * 1.35); height: calc(var(--u) * 1.35); }
+  .small span { font-size: calc(var(--u) * 0.85); font-weight: 600; line-height: 1; white-space: nowrap; }
+  .small:disabled { opacity: 0.32; cursor: default; }
+
+  .tool[aria-pressed="true"] { background-color: var(--accent-soft) !important; box-shadow: inset 0 0 0 2px var(--accent); }
+
+  .size { width: calc(var(--u) * 2.3); height: 100%; }
+  .size i { display: block; width: var(--d); height: var(--d); border-radius: 50%; background: #a9adb4; transition: background-color .12s, box-shadow .12s; }
+  .size[aria-pressed="true"] i { background: var(--ink); }
+  .group.on .size[aria-pressed="true"] i { box-shadow: 0 0 0 calc(var(--u) * 0.18) #fff, 0 0 0 calc(var(--u) * 0.18 + 2px) var(--accent); }
+
+  .label { height: calc(var(--u) * 1.2); display: flex; align-items: center; font-size: calc(var(--u) * 0.95); font-weight: 700; color: var(--muted); line-height: 1; }
+  .pens { height: calc(var(--u) * 4); gap: calc(var(--u) * 0.35); }
+  .pen { width: calc(var(--u) * 3.8); height: 100%; }
+  .pen svg { width: calc(var(--u) * 3.2); height: calc(var(--u) * 3.2); transition: transform .12s; }
+  .pen[aria-pressed="true"] svg { transform: translateY(calc(var(--u) * -0.18)); }
+
+  /* ---------- board ---------- */
+  #board { position: relative; flex: 1; min-height: 0; background: #fff; overflow: hidden; cursor: crosshair; }
+  #board.erase { cursor: none; }
+  #c, #live { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #live { pointer-events: none; }
+  #ring {
+    position: absolute; left: 0; top: 0; display: none; pointer-events: none; border-radius: 50%;
+    border: 1.5px solid rgba(0, 0, 0, 0.55);
+    box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.95), inset 0 0 0 1.5px rgba(255, 255, 255, 0.95);
+    will-change: transform;
+  }
+
+  /* ---------- fullscreen button ---------- */
+  #fs {
+    position: fixed;
+    right: calc(var(--u) * 0.9 + env(safe-area-inset-right));
+    bottom: calc(var(--u) * 0.9 + env(safe-area-inset-bottom));
+    height: calc(var(--u) * 2.4); padding: 0 calc(var(--u) * 0.75); gap: calc(var(--u) * 0.35);
+    direction: rtl; color: var(--muted);
+    background: rgba(245, 244, 240, 0.94); border: 1px solid var(--bar-line); border-radius: 999px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  }
+  #fs svg { width: calc(var(--u) * 1.3); height: calc(var(--u) * 1.3); }
+  #fs span { font-size: calc(var(--u) * 0.85); font-weight: 600; line-height: 1; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<header id="bar">
+  <!-- 1. Erase whiteboard, with undo / redo under it -->
+  <div class="group">
+    <button id="clear" class="big" type="button" aria-label="مسح السبورة">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <defs>
+          <linearGradient id="binBody" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stop-color="#cdd5e1"/><stop offset="1" stop-color="#a2adbf"/>
+          </linearGradient>
+        </defs>
+        <path d="M25 13V9.5A3.5 3.5 0 0 1 28.5 6h7A3.5 3.5 0 0 1 39 9.5V13" fill="none" stroke="#677286" stroke-width="3.2"/>
+        <rect x="9" y="12" width="46" height="8.5" rx="3.5" fill="#7a869a"/>
+        <path d="M13.5 23h37l-3.4 32a4.5 4.5 0 0 1-4.5 4H21.4a4.5 4.5 0 0 1-4.5-4z" fill="url(#binBody)"/>
+        <path d="M25 30v21M32 30v21M39 30v21" stroke="#8590a4" stroke-width="3" stroke-linecap="round"/>
+      </svg>
+      <span lang="ar">مسح السبورة</span>
+    </button>
+    <div class="row">
+      <button id="undo" class="small" type="button" aria-label="تراجع" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+        <span lang="ar">تراجع</span>
+      </button>
+      <button id="redo" class="small" type="button" aria-label="إعادة" disabled>
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>
+        <span lang="ar">إعادة</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="sep"></div>
+
+  <!-- 2. Eraser, with its 3 sizes under it -->
+  <div class="group" id="eraserGroup">
+    <button id="eraser" class="big tool" type="button" aria-label="ممحاة" aria-pressed="false">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <g transform="rotate(-32 32 32)">
+          <rect x="6" y="21" width="52" height="22" rx="5" fill="#ec859f"/>
+          <path d="M11 21h42a5 5 0 0 1 5 5v3H6v-3a5 5 0 0 1 5-5z" fill="#f5b2c3"/>
+          <rect x="31" y="19" width="27" height="26" rx="4.5" fill="#3b7ddd"/>
+          <path d="M35.5 19h18a4.5 4.5 0 0 1 4.5 4.5V28H31v-4.5a4.5 4.5 0 0 1 4.5-4.5z" fill="#6ea2f1"/>
+          <rect x="31" y="19" width="2.2" height="26" fill="#2b62b5" opacity=".55"/>
+        </g>
+      </svg>
+      <span lang="ar">ممحاة</span>
+    </button>
+    <div class="row">
+      <button class="size" type="button" data-size="s" aria-label="ممحاة صغيرة" aria-pressed="false"><i style="--d: calc(var(--u) * 0.5)"></i></button>
+      <button class="size" type="button" data-size="m" aria-label="ممحاة متوسطة" aria-pressed="true"><i style="--d: calc(var(--u) * 0.9)"></i></button>
+      <button class="size" type="button" data-size="l" aria-label="ممحاة كبيرة" aria-pressed="false"><i style="--d: calc(var(--u) * 1.4)"></i></button>
+    </div>
+  </div>
+
+  <div class="sep"></div>
+
+  <!-- 3. Pen: "qalam" above, 3 coloured pens below -->
+  <div class="group">
+    <div class="label" lang="ar">قلم</div>
+    <div class="row pens">
+      <button class="pen tool" type="button" data-color="#16181d" aria-label="قلم أسود" aria-pressed="true" style="color:#16181d"></button>
+      <button class="pen tool" type="button" data-color="#15803d" aria-label="قلم أخضر" aria-pressed="false" style="color:#15803d"></button>
+      <button class="pen tool" type="button" data-color="#dc2626" aria-label="قلم أحمر" aria-pressed="false" style="color:#dc2626"></button>
+    </div>
+  </div>
+</header>
+
+<main id="board">
+  <canvas id="c"></canvas>
+  <canvas id="live"></canvas>
+  <div id="ring"></div>
+</main>
+
+<button id="fs" type="button" aria-label="ملء الشاشة">
+  <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+    <path id="fsIcon" d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/>
+  </svg>
+  <span id="fsLabel" lang="ar">ملء الشاشة</span>
+</button>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------- pen icon (same drawing, coloured by each button's CSS colour) ----------
+  var PEN_SVG =
+    '<svg viewBox="0 0 64 64" aria-hidden="true"><g transform="rotate(-45 32 32)">' +
+    '<path d="M4 32 13 28v8z" fill="currentColor"/>' +
+    '<path d="M12 27.5 21 23.5v17l-9-4z" fill="#d3d8df"/>' +
+    '<rect x="20" y="22" width="30" height="20" rx="3" fill="currentColor"/>' +
+    '<rect x="21" y="24.5" width="28" height="4.5" rx="2" fill="#fff" opacity=".3"/>' +
+    '<rect x="47" y="22.5" width="13" height="19" rx="4" fill="currentColor"/>' +
+    '<rect x="47" y="22.5" width="13" height="19" rx="4" fill="#000" opacity=".22"/>' +
+    '<rect x="44.5" y="22" width="2.5" height="20" fill="#fff" opacity=".6"/>' +
+    '</g></svg>';
+
+  var board = document.getElementById('board');
+  var canvas = document.getElementById('c');
+  var ctx = canvas.getContext('2d');
+  var liveCanvas = document.getElementById('live');      // the line being written right now (pen only)
+  var lctx = liveCanvas.getContext('2d');
+  var ring = document.getElementById('ring');
+  var clearBtn = document.getElementById('clear');
+  var undoBtn = document.getElementById('undo');
+  var redoBtn = document.getElementById('redo');
+  var eraserBtn = document.getElementById('eraser');
+  var eraserGroup = document.getElementById('eraserGroup');
+  var sizeBtns = Array.prototype.slice.call(document.querySelectorAll('.size'));
+  var penBtns = Array.prototype.slice.call(document.querySelectorAll('.pen'));
+  var fsBtn = document.getElementById('fs');
+  var fsIcon = document.getElementById('fsIcon');
+  var fsLabel = document.getElementById('fsLabel');
+
+  penBtns.forEach(function (b) { b.innerHTML = PEN_SVG; });
+
+  // ---------- sizes: scale with the physical screen, so it looks the same on any board ----------
+  var base = Math.max(screen.width || 0, screen.height || 0, window.innerWidth || 0, window.innerHeight || 0, 800);
+  var ERASER = { s: 0.011, m: 0.026, l: 0.058 };          // eraser diameter, as a share of the screen
+  function penWidth() { return Math.max(2, Math.min(9, base * 0.0018)); }
+  function eraserWidth() { return Math.max(10, base * ERASER[eraserSize]); }
+  function r1(v) { return Math.round(v * 10) / 10; }
+
+  // ---------- state ----------
+  var tool = 'pen';
+  var color = '#16181d';
+  var eraserSize = 'm';
+  var actions = [];        // committed: {t:'s', c:colour|null(eraser), w, p:[x,y,...]} or {t:'c'} (clear)
+  var redoStack = [];
+  var live = new Map();    // pointerId -> stroke being drawn (several fingers can draw at once)
+  var dpr = 1;
+  var rect = board.getBoundingClientRect();
+
+  // ---------- drawing ----------
+  function styleFor(g, s) {
+    g.globalCompositeOperation = s.c ? 'source-over' : 'destination-out';
+    g.strokeStyle = s.c || '#000';
+    g.fillStyle = s.c || '#000';
+    g.lineWidth = s.w;
+    g.lineCap = 'round';
+    g.lineJoin = 'round';
+  }
+
+  function dot(g, s, x, y) {
+    g.beginPath();
+    g.arc(x, y, s.w / 2, 0, Math.PI * 2);
+    g.fill();
+  }
+
+  // One smooth path through all points (same look live and after undo/resize).
+  function drawStroke(g, s) {
+    var p = s.p, n = p.length / 2;
+    if (!n) return;
+    styleFor(g, s);
+    if (n === 1) { dot(g, s, p[0], p[1]); return; }
+    g.beginPath();
+    g.moveTo(p[0], p[1]);
+    if (n === 2) {
+      g.lineTo(p[2], p[3]);
+    } else {
+      for (var i = 1; i < n - 1; i++) {
+        var x = p[2 * i], y = p[2 * i + 1];
+        g.quadraticCurveTo(x, y, (x + p[2 * i + 2]) / 2, (y + p[2 * i + 3]) / 2);
+      }
+      g.lineTo(p[2 * n - 2], p[2 * n - 1]);
+    }
+    g.stroke();
+  }
+
+  // Pen lines being written are drawn whole on the top layer, once per screen frame.
+  var frame = 0;
+  function requestLive() { if (!frame) frame = requestAnimationFrame(renderLive); }
+  function renderLive() {
+    frame = 0;
+    lctx.setTransform(1, 0, 0, 1, 0, 0);
+    lctx.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
+    lctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    live.forEach(function (s) { if (s.c) drawStroke(lctx, s); });
+  }
+
+  function lastClear() {
+    for (var i = actions.length - 1; i >= 0; i--) if (actions[i].t === 'c') return i;
+    return -1;
+  }
+
+  function redraw() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    for (var i = lastClear() + 1; i < actions.length; i++) drawStroke(ctx, actions[i]);
+    live.forEach(function (s) { if (!s.c) drawStroke(ctx, s); });   // eraser strokes in progress
+    if (frame) { cancelAnimationFrame(frame); frame = 0; }
+    renderLive();
+  }
+
+  function resize() {
+    rect = board.getBoundingClientRect();
+    dpr = Math.min(window.devicePixelRatio || 1, 3);
+    var w = Math.max(1, Math.round(rect.width * dpr));
+    var h = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = liveCanvas.width = w;
+      canvas.height = liveCanvas.height = h;
+    }
+    redraw();
+  }
+
+  // ---------- pointer input ----------
+  function pos(e) {
+    return { x: r1(e.clientX - rect.left), y: r1(e.clientY - rect.top) };
+  }
+
+  function showRing(x, y, w) {
+    ring.style.width = w + 'px';
+    ring.style.height = w + 'px';
+    ring.style.transform = 'translate(' + (x - w / 2) + 'px,' + (y - w / 2) + 'px)';
+    ring.style.display = 'block';
+  }
+  function hideRing() { ring.style.display = 'none'; }
+
+  // Adds a point. For the eraser, also erases the newest smoothed piece right away.
+  function extend(s, x, y) {
+    var p = s.p, n = p.length;
+    var dx = x - p[n - 2], dy = y - p[n - 1];
+    if (dx * dx + dy * dy < 0.64) return;                 // ignore jitter under 0.8px
+    p.push(x, y);
+    if (s.c) return;                                      // pen: drawn whole by renderLive()
+    var k = p.length / 2 - 1;                             // index of the new point
+    if (k < 2) return;
+    var ax = p[2 * k - 4], ay = p[2 * k - 3], bx = p[2 * k - 2], by = p[2 * k - 1];
+    var sx = k === 2 ? ax : (ax + bx) / 2, sy = k === 2 ? ay : (ay + by) / 2;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.quadraticCurveTo(bx, by, (bx + x) / 2, (by + y) / 2);
+    ctx.stroke();
+  }
+
+  canvas.addEventListener('pointerdown', function (e) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    e.preventDefault();
+    try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+    rect = board.getBoundingClientRect();
+    var erasing = tool === 'eraser' || e.button === 5;    // button 5 = the eraser end of a stylus
+    var s = { t: 's', c: erasing ? null : color, w: r1(erasing ? eraserWidth() : penWidth()), p: [] };
+    var pt = pos(e);
+    s.p.push(pt.x, pt.y);
+    live.set(e.pointerId, s);
+    if (erasing) {
+      styleFor(ctx, s);
+      dot(ctx, s, pt.x, pt.y);
+      showRing(pt.x, pt.y, s.w);
+    } else {
+      requestLive();
+    }
+  });
+
+  canvas.addEventListener('pointermove', function (e) {
+    var s = live.get(e.pointerId);
+    if (!s) {
+      if (tool === 'eraser' && e.pointerType !== 'touch') { var h = pos(e); showRing(h.x, h.y, eraserWidth()); }
+      return;
+    }
+    var evs = e.getCoalescedEvents ? e.getCoalescedEvents() : null;
+    if (!evs || !evs.length) evs = [e];
+    if (!s.c) styleFor(ctx, s);
+    for (var i = 0; i < evs.length; i++) { var pt = pos(evs[i]); extend(s, pt.x, pt.y); }
+    if (s.c) requestLive();
+    else { var last = pos(e); showRing(last.x, last.y, s.w); }
+  });
+
+  function finish(e) {
+    var s = live.get(e.pointerId);
+    if (!s) return;
+    live.delete(e.pointerId);
+    var p = s.p, n = p.length / 2;
+    if (s.c) {
+      drawStroke(ctx, s);                                 // pen: move the finished line to the board
+      requestLive();
+    } else if (n >= 2) {                                  // eraser: erase the last little piece
+      styleFor(ctx, s);
+      ctx.beginPath();
+      if (n === 2) ctx.moveTo(p[0], p[1]);
+      else ctx.moveTo((p[2 * n - 4] + p[2 * n - 2]) / 2, (p[2 * n - 3] + p[2 * n - 1]) / 2);
+      ctx.lineTo(p[2 * n - 2], p[2 * n - 1]);
+      ctx.stroke();
+    }
+    actions.push(s);
+    redoStack.length = 0;
+    updateButtons();
+    scheduleSave();
+    if (!s.c && e.pointerType === 'touch') hideRing();
+  }
+  canvas.addEventListener('pointerup', finish);
+  canvas.addEventListener('pointercancel', finish);
+  canvas.addEventListener('lostpointercapture', finish);
+  canvas.addEventListener('pointerleave', function (e) {
+    if (!live.has(e.pointerId) && e.pointerType !== 'touch') hideRing();
+  });
+
+  // ---------- buttons ----------
+  function updateButtons() {
+    undoBtn.disabled = actions.length === 0;
+    redoBtn.disabled = redoStack.length === 0;
+  }
+
+  function setTool(t) {
+    tool = t;
+    eraserBtn.setAttribute('aria-pressed', String(t === 'eraser'));
+    penBtns.forEach(function (b) { b.setAttribute('aria-pressed', String(t === 'pen' && b.dataset.color === color)); });
+    eraserGroup.classList.toggle('on', t === 'eraser');
+    board.classList.toggle('erase', t === 'eraser');
+    if (t !== 'eraser') hideRing();
+  }
+
+  function undo() {
+    if (!actions.length) return;
+    redoStack.push(actions.pop());
+    redraw(); updateButtons(); scheduleSave();
+  }
+  function redo() {
+    if (!redoStack.length) return;
+    actions.push(redoStack.pop());
+    redraw(); updateButtons(); scheduleSave();
+  }
+  function clearBoard() {
+    if (lastClear() === actions.length - 1 && live.size === 0) return;   // already empty
+    live.clear();
+    hideRing();
+    actions.push({ t: 'c' });
+    redoStack.length = 0;
+    redraw(); updateButtons(); scheduleSave();
+  }
+
+  clearBtn.addEventListener('click', clearBoard);
+  undoBtn.addEventListener('click', undo);
+  redoBtn.addEventListener('click', redo);
+  eraserBtn.addEventListener('click', function () { setTool('eraser'); });
+  sizeBtns.forEach(function (b) {
+    b.addEventListener('click', function () {
+      eraserSize = b.dataset.size;
+      sizeBtns.forEach(function (o) { o.setAttribute('aria-pressed', String(o === b)); });
+      setTool('eraser');
+    });
+  });
+  penBtns.forEach(function (b) {
+    b.addEventListener('click', function () { color = b.dataset.color; setTool('pen'); });
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    var k = (e.key || '').toLowerCase();
+    if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+    else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+  });
+
+  // ---------- fullscreen ----------
+  var de = document.documentElement;
+  var reqFs = de.requestFullscreen || de.webkitRequestFullscreen;
+  var exitFs = document.exitFullscreen || document.webkitExitFullscreen;
+  var ICON_ENTER = 'M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4';
+  var ICON_EXIT = 'M9 4v4a1 1 0 0 1-1 1H4M20 9h-4a1 1 0 0 1-1-1V4M15 20v-4a1 1 0 0 1 1-1h4M4 15h4a1 1 0 0 1 1 1v4';
+  function isFs() { return !!(document.fullscreenElement || document.webkitFullscreenElement); }
+  function syncFs() {
+    var on = isFs();
+    fsIcon.setAttribute('d', on ? ICON_EXIT : ICON_ENTER);
+    fsLabel.textContent = on ? 'إنهاء ملء الشاشة' : 'ملء الشاشة';
+    fsBtn.setAttribute('aria-label', fsLabel.textContent);
+  }
+  if (!reqFs) {
+    fsBtn.hidden = true;
+  } else {
+    fsBtn.addEventListener('click', function () {
+      try {
+        var r = isFs() ? exitFs.call(document) : reqFs.call(de, { navigationUI: 'hide' });
+        if (r && r.catch) r.catch(function () {});
+      } catch (_) {}
+    });
+    document.addEventListener('fullscreenchange', syncFs);
+    document.addEventListener('webkitfullscreenchange', syncFs);
+  }
+
+  // ---------- stop the browser from zooming, scrolling or opening menus on touch ----------
+  document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  document.addEventListener('selectstart', function (e) { e.preventDefault(); });
+  document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
+  document.addEventListener('dblclick', function (e) { e.preventDefault(); });
+  document.addEventListener('touchmove', function (e) { e.preventDefault(); }, { passive: false });
+  document.addEventListener('wheel', function (e) { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+
+  // ---------- keep the drawing if the page is reloaded by accident (this tab only) ----------
+  var KEY = 'sabbura-board-v1', saveTimer = 0;
+  function save() {
+    clearTimeout(saveTimer);
+    try { sessionStorage.setItem(KEY, JSON.stringify(actions.slice(lastClear() + 1))); } catch (_) {}
+  }
+  function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(save, 700); }
+  try {
+    var saved = JSON.parse(sessionStorage.getItem(KEY) || '[]');
+    if (Array.isArray(saved)) {
+      actions = saved.filter(function (a) {
+        return a && a.t === 's' && Array.isArray(a.p) && a.p.length >= 2 && typeof a.w === 'number';
+      });
+    }
+  } catch (_) {}
+  window.addEventListener('pagehide', save);
+  document.addEventListener('visibilitychange', function () { if (document.hidden) save(); });
+
+  // ---------- start ----------
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(board);
+  window.addEventListener('resize', resize);
+  resize();
+  updateButtons();
+  setTool('pen');
+})();
+</script>
+</body>
+</html>
