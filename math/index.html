@@ -83,20 +83,8 @@
   .pen[aria-pressed="true"] svg { transform: translateY(calc(var(--u) * -0.18)); }
 
   /* ---------- board ---------- */
-  #board { position: relative; flex: 1; min-height: 0; background-color: #fff; overflow: hidden; cursor: crosshair; }
-  #board.grid-sq {
-    background-image:
-      linear-gradient(to right, var(--gmaj) 1px, transparent 1px),
-      linear-gradient(to bottom, var(--gmaj) 1px, transparent 1px),
-      linear-gradient(to right, var(--gmin) 1px, transparent 1px),
-      linear-gradient(to bottom, var(--gmin) 1px, transparent 1px);
-    background-size: calc(var(--g) * 5) calc(var(--g) * 5), calc(var(--g) * 5) calc(var(--g) * 5), var(--g) var(--g), var(--g) var(--g);
-  }
-  #board.grid-dot {
-    background-image: radial-gradient(circle, var(--gdot) 0 1.5px, transparent 2px);
-    background-size: var(--g) var(--g);
-    background-position: calc(var(--g) / -2) calc(var(--g) / -2);
-  }
+  /* overflow: clip, not hidden: a text box near the edge must never scroll the board */
+  #board { position: relative; flex: 1; min-height: 0; background-color: #fff; overflow: hidden; overflow: clip; cursor: crosshair; }
   #c, #live, #ui { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
   #live, #ui { pointer-events: none; }
   #live.mult { mix-blend-mode: multiply; }
@@ -167,6 +155,7 @@
     background: var(--bar); border: 1px solid var(--bar-line); border-radius: calc(var(--u) * 1);
     box-shadow: 0 12px 34px rgba(0, 0, 0, 0.16);
     max-height: calc(100% - var(--u) * 5); overflow: auto;
+    touch-action: pan-y; overscroll-behavior: contain;
   }
   .thead { font-size: calc(var(--u) * 0.7); font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
   .trow { display: flex; align-items: center; gap: calc(var(--u) * 0.2); }
@@ -183,6 +172,7 @@
     position: fixed; z-index: 30; left: 50%; top: calc(var(--u) * 7.6); transform: translateX(-50%);
     width: min(94vw, calc(var(--u) * 38));
     max-height: calc(100% - var(--u) * 9); overflow: auto;
+    touch-action: pan-y; overscroll-behavior: contain;
     background: #fff; border: 1px solid var(--bar-line); border-radius: calc(var(--u) * 1);
     box-shadow: 0 18px 50px rgba(0, 0, 0, 0.2);
     padding: calc(var(--u) * 1.1); display: flex; flex-direction: column; gap: calc(var(--u) * 0.7);
@@ -512,7 +502,8 @@
   const penWidth = () => Math.max(2, Math.min(9, base * 0.0018));
   const eraserWidth = () => Math.max(10, base * ERASER[eraserSize]);
   const hlWidth = () => Math.max(12, base * 0.011);
-  const textSize = (k) => Math.round(Math.max(14, base * TEXT[k]));
+  const TEXT_MIN = { s: 12, m: 16, l: 22 };
+  const textSize = (k) => Math.round(Math.max(TEXT_MIN[k], base * TEXT[k]));
   const laserWidth = () => Math.max(4, base * 0.0028);
   const gridStep = () => Math.max(24, Math.round(base * 0.021));
   const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -550,6 +541,7 @@
   let clip = null, clipTag = '', clipN = 0;
   let hover = null, lastTap = null, lastText = null;
   let pageTrash = null;                  // the page just deleted: Undo right after brings it back
+  let lastNudge = null;                  // arrow-key moves in a row merge into one undo step
   let dpr = 1, uPx = 12;
   let rect = board.getBoundingClientRect();
 
@@ -783,7 +775,23 @@
     sec: (x) => 1 / Math.cos(x), csc: (x) => 1 / Math.sin(x), cot: (x) => 1 / Math.tan(x),
     sqrt: Math.sqrt, cbrt: Math.cbrt, abs: Math.abs, ln: Math.log, log: Math.log10, exp: Math.exp,
     floor: Math.floor, ceil: Math.ceil, round: Math.round, sign: Math.sign,
+    cosec: (x) => 1 / Math.sin(x),
   };
+  // sin^-1 x means arcsin x (not 1/sin x)
+  const INVERSE = {
+    sin: Math.asin, cos: Math.acos, tan: Math.atan, sinh: Math.asinh, cosh: Math.acosh, tanh: Math.atanh,
+    sec: (x) => Math.acos(1 / x), csc: (x) => Math.asin(1 / x), cosec: (x) => Math.asin(1 / x), cot: (x) => Math.atan(1 / x),
+  };
+  // (-8)^(1/3) = -2: odd roots of negative numbers are real
+  function powr(b, e) {
+    if (b < 0 && !Number.isInteger(e)) {
+      for (let q = 3; q <= 15; q += 2) {
+        const n = Math.round(e * q);
+        if (Math.abs(e * q - n) < 1e-9) return (n % 2 ? -1 : 1) * Math.pow(-b, e);
+      }
+    }
+    return Math.pow(b, e);
+  }
   const CONSTS = { pi: Math.PI, e: Math.E, tau: 2 * Math.PI };
   const NAMES = Object.keys(FUNCS).concat(Object.keys(CONSTS), ['x']).sort((a, b) => b.length - a.length);
   function factorial(n) {
@@ -794,8 +802,9 @@
     let s = String(src).toLowerCase()
       .replace(/²/g, '^2').replace(/³/g, '^3').replace(/π/g, 'pi').replace(/√/g, 'sqrt')
       .replace(/[×·∙]/g, '*').replace(/÷/g, '/').replace(/[−–]/g, '-').replace(/(\d),(\d)/g, '$1.$2')
-      .replace(/[[{]/g, '(').replace(/[\]}]/g, ')');
-    s = s.replace(/^\s*(y|f\s*\(\s*x\s*\))\s*=/, '');
+      .replace(/[[{]/g, '(').replace(/[\]}]/g, ')')
+      .replace(/(\d)½/g, '($1+1/2)').replace(/½/g, '(1/2)').replace(/°/g, '(pi/180)');   // 1½ = 1.5
+    s = s.replace(/^\s*(y|[a-z]\s*\(\s*x\s*\))\s*=/, '');          // y = ..., f(x) = ..., g(x) = ...
     if (!s.trim()) throw new Error('It is empty');
     const toks = [];
     let i = 0;
@@ -839,10 +848,21 @@
     function term() {
       let a = unary();
       while (is('*') || is('/')) {
-        const op = toks[p++].t, b = unary(), l = a;
-        a = op === '*' ? (x) => l(x) * b(x) : (x) => l(x) / b(x);
+        const op = toks[p++].t;
+        if (op === '*') { const b = unary(), l = a; a = (x) => l(x) * b(x); }
+        else {
+          // 1/2x = (1/2)x, the same way the Formula tool shows it
+          const b = divisor(), l = a;
+          a = (x) => l(x) / b(x);
+          while (startsPrimary(peek())) { const c = power(), q = a; a = (x) => q(x) * c(x); }
+        }
       }
       return a;
+    }
+    function divisor() {
+      if (is('-')) { p++; const a = divisor(); return (x) => -a(x); }
+      if (is('+')) { p++; return divisor(); }
+      return power();
     }
     function unary() {
       if (is('-')) { p++; const a = unary(); return (x) => -a(x); }
@@ -861,7 +881,7 @@
     }
     function power() {
       const b = postfix();
-      if (is('^')) { p++; const e = exponent(); return (x) => Math.pow(b(x), e(x)); }
+      if (is('^')) { p++; const e = exponent(); return (x) => powr(b(x), e(x)); }
       return b;
     }
     function postfix() {
@@ -878,9 +898,15 @@
         case '(': { const a = expr(); expect(')'); return a; }
         case '|': { absDepth++; const a = expr(); absDepth--; expect('|'); return (x) => Math.abs(a(x)); }
         case 'fn': {
-          const f = FUNCS[tk.v];
-          let pw = null;
-          if (is('^')) { p++; pw = exponent(); }
+          let pw = null, inverse = false;
+          if (is('^')) {
+            const a1 = toks[p + 1], a2 = toks[p + 2], a3 = toks[p + 3], a4 = toks[p + 4];
+            const one = (t) => t && t.t === 'num' && t.v === 1;
+            if (INVERSE[tk.v] && a1 && a1.t === '-' && one(a2) && !(a3 && (a3.t === '^' || a3.t === '!'))) { p += 3; inverse = true; }
+            else if (INVERSE[tk.v] && a1 && a1.t === '(' && a2 && a2.t === '-' && one(a3) && a4 && a4.t === ')') { p += 5; inverse = true; }
+            else { p++; pw = exponent(); }
+          }
+          const f = inverse ? INVERSE[tk.v] : FUNCS[tk.v];
           let arg;
           if (is('(')) { p++; arg = expr(); expect(')'); }
           else {
@@ -889,7 +915,7 @@
             while (startsPrimary(peek()) && peek().t !== 'fn') { const b = power(), l = arg; arg = (x) => l(x) * b(x); }
           }
           const a = arg;
-          if (pw) { const e = pw; return (x) => Math.pow(f(a(x)), e(x)); }
+          if (pw) { const e = pw; return (x) => powr(f(a(x)), e(x)); }
           return (x) => f(a(x));
         }
         default: throw new Error('Unexpected "' + tk.t + '"');
@@ -951,13 +977,18 @@
     g.save();
     g.beginPath(); g.rect(x, y, W, H); g.clip();
     const fs = clamp(Math.min(W, H) * 0.036, 10, 20);
-    let sx = niceStep((xb - xa) * fs * 4.2 / W), sy = niceStep((yb - ya) * fs * 3.2 / H);
+    let sx = niceStep((xb - xa) * fs * 3 / W), sy = niceStep((yb - ya) * fs * 2.4 / H);
     if (!v.manual) sx = sy = Math.max(sx, sy);
-    // grid lines
-    g.lineWidth = 1; g.strokeStyle = '#e6eaf0'; g.beginPath();
-    for (let k = Math.ceil(xa / sx); k * sx <= xb + 1e-9; k++) { const px = Math.round(X(k * sx)) + 0.5; g.moveTo(px, y); g.lineTo(px, y + H); }
-    for (let k = Math.ceil(ya / sy); k * sy <= yb + 1e-9; k++) { const py = Math.round(Y(k * sy)) + 0.5; g.moveTo(x, py); g.lineTo(x + W, py); }
-    g.stroke();
+    // grid lines: fine ones between the numbered ones
+    const minor = (s) => { const m = s / Math.pow(10, Math.floor(Math.log10(s) + 1e-9)); return s / (m > 1.5 && m < 3 ? 2 : 5); };
+    const lines = (stepX, stepY, color) => {
+      g.lineWidth = 1; g.strokeStyle = color; g.beginPath();
+      if (stepX * W / (xb - xa) >= 7) for (let k = Math.ceil(xa / stepX - 1e-9); k * stepX <= xb + 1e-9; k++) { const px = Math.round(X(k * stepX)) + 0.5; g.moveTo(px, y); g.lineTo(px, y + H); }
+      if (stepY * H / (yb - ya) >= 7) for (let k = Math.ceil(ya / stepY - 1e-9); k * stepY <= yb + 1e-9; k++) { const py = Math.round(Y(k * stepY)) + 0.5; g.moveTo(x, py); g.lineTo(x + W, py); }
+      g.stroke();
+    };
+    lines(minor(sx), minor(sy), '#f0f2f6');
+    lines(sx, sy, '#dde2ea');
     // axes
     const zx = X(0), zy = Y(0);
     const showY = zx >= x && zx <= x + W, showX = zy >= y && zy <= y + H;
@@ -1009,7 +1040,19 @@
     const N = Math.max(60, Math.ceil(W * 1.5));
     const lim = H * 6;
     const val = (t) => { try { return f(t); } catch (_) { return NaN; } };
-    let down = false, prevPy = 0, prevV = 0, prevT = 0;
+    // A big step between two samples is either a steep piece of curve or a jump (an asymptote such as tan x
+    // or 1/x). Zoom in on the steeper half again and again: a real curve flattens out, a jump never does.
+    const jumps = (t0, v0, t1, v1) => {
+      for (let k = 0; k < 24; k++) {
+        const tm = (t0 + t1) / 2, vm = val(tm);
+        if (!isFinite(vm)) return true;
+        const j0 = Math.abs(Y(vm) - Y(v0)), j1 = Math.abs(Y(v1) - Y(vm));
+        if (Math.max(j0, j1) < H * 0.03) return false;
+        if (j0 >= j1) { t1 = tm; v1 = vm; } else { t0 = tm; v0 = vm; }
+      }
+      return true;
+    };
+    let down = false, prevV = 0, prevT = 0;
     g.beginPath();
     for (let i = 0; i <= N; i++) {
       const t = xa + (xb - xa) * i / N;
@@ -1017,12 +1060,9 @@
       if (!isFinite(v)) { down = false; continue; }
       const py = clamp(Y(v), y - lim, y + H + lim);
       const px = x + W * i / N;
-      if (down && Math.abs(py - prevPy) > H * 0.4) {
-        const vm = val((t + prevT) / 2), lo = Math.min(v, prevV), hi = Math.max(v, prevV), m = (hi - lo) * 0.1;
-        if (!isFinite(vm) || vm < lo - m || vm > hi + m) down = false;     // a jump (asymptote), not a steep line
-      }
+      if (down && Math.abs(Y(v) - Y(prevV)) > H * 0.25 && jumps(prevT, prevV, t, v)) down = false;
       if (down) g.lineTo(px, py); else { g.moveTo(px, py); down = true; }
-      prevPy = py; prevV = v; prevT = t;
+      prevV = v; prevT = t;
     }
     g.stroke();
   }
@@ -1037,6 +1077,7 @@
     ctx.globalCompositeOperation = 'source-over';
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawGridOn(ctx, rect.width, rect.height);      // on the canvas, so the highlighter and the PNG show it the same way
     const hide = editing && editing.orig ? editing.orig.id : -1;
     for (const it of viewItems()) {
       if (it.id === hide) continue;
@@ -1071,7 +1112,7 @@
       uctx.strokeRect(r.x0 + 0.5, r.y0 + 0.5, r.x1 - r.x0, r.y1 - r.y0);
       uctx.setLineDash([]);
     }
-    const info = selInfo();
+    const info = editing ? null : selInfo();
     if (info) {
       if (!info.isLine) {
         const b = padBox(info.box);
@@ -1113,10 +1154,19 @@
     if (laser.pts.length) requestRender(false);
   }
 
+  // Give the top bar a whole number of screen pixels, so the board (and pasted screenshots) sit on the pixel grid.
+  const barEl = $('bar');
+  function snapBar() {
+    barEl.style.height = '';
+    const d0 = window.devicePixelRatio || 1;
+    const h = barEl.getBoundingClientRect().height;
+    barEl.style.height = (Math.ceil(h * d0 - 0.01) / d0) + 'px';
+  }
   function resize() {
     rect = board.getBoundingClientRect();
     dpr = Math.min(window.devicePixelRatio || 1, 3);
     uPx = Math.max(6, undoBtn.getBoundingClientRect().height / 2.3) || 12;
+    tray.style.maxHeight = Math.max(120, window.innerHeight - barEl.getBoundingClientRect().bottom - uPx * 4 - 8) + 'px';
     const w = Math.max(1, Math.round(rect.width * dpr));
     const h = Math.max(1, Math.round(rect.height * dpr));
     if (canvas.width !== w || canvas.height !== h) {
@@ -1124,6 +1174,7 @@
       canvas.height = liveCanvas.height = uiCanvas.height = h;
     }
     board.style.setProperty('--g', gridStep() + 'px');
+    if (editing) sizeEditor(true);                 // keep a text being typed inside a smaller board
     renderNow();
   }
 
@@ -1151,7 +1202,8 @@
     sel.forEach((id) => { if (!ids.has(id)) sel.delete(id); });
   }
   function undo() {
-    finishText(); cancelGesture();
+    finishText(); cancelGesture(); abortErase();
+    lastNudge = null;
     if (pageTrash) {
       const t = pageTrash;
       pages.splice(Math.min(t.index, pages.length), 0, t.page);
@@ -1166,17 +1218,19 @@
     pruneSel(); afterChange();
   }
   function redo() {
-    finishText(); cancelGesture();
+    finishText(); cancelGesture(); abortErase();
+    lastNudge = null;
     const pg = P();
     if (!pg.future.length) return;
+    pageTrash = null;                      // a deleted page can no longer come back with Undo
     pg.past.push(pg.items);
     pg.items = pg.future.pop();
     pruneSel(); afterChange();
   }
   function clearBoard() {
-    finishText(); cancelGesture();
+    finishText(); cancelGesture(); abortErase();
     live.clear(); hideRing();
-    if (eraseSession) eraseSession = null;
+    lastText = null;
     if (!P().items.length) { renderNow(); return; }      // already empty
     sel.clear();
     commit([]);
@@ -1211,14 +1265,15 @@
   function eraseSegment(items, a, b, R) {
     const x0 = Math.min(a.x, b.x) - R, x1 = Math.max(a.x, b.x) + R;
     const y0 = Math.min(a.y, b.y) - R, y1 = Math.max(a.y, b.y) + R;
-    const R2 = R * R;
     let out = null;
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       let rep = null;
       if (it.k === 'ink') {
         const bb = bbox(it);
-        if (bb[2] >= x0 && bb[0] <= x1 && bb[3] >= y0 && bb[1] <= y1) rep = cutInk(it, a.x, a.y, b.x, b.y, R2);
+        // count the line's own thickness too, so the gap left behind is as wide as the eraser ring
+        const r = R + it.w / 2;
+        if (bb[2] >= x0 && bb[0] <= x1 && bb[3] >= y0 && bb[1] <= y1) rep = cutInk(it, a.x, a.y, b.x, b.y, r * r);
       }
       if (rep) { if (!out) out = items.slice(0, i); for (const r of rep) out.push(r); }
       else if (out) out.push(it);
@@ -1228,18 +1283,29 @@
   function beginErase() {
     if (eraseSession) { eraseSession.n++; return; }
     const pg = P();
-    eraseSession = { base: pg.items, n: 1, page: cur };
+    eraseSession = { base: pg.items, n: 1, page: cur, future: pg.future, trash: pageTrash };
     pushPast(pg);
     updateButtons();
   }
   function endErase() {
     if (!eraseSession) return;
     if (--eraseSession.n > 0) return;
-    const pg = pages[eraseSession.page];
-    if (pg && pg.items === eraseSession.base && pg.past[pg.past.length - 1] === eraseSession.base) pg.past.pop();
+    const s = eraseSession, pg = pages[s.page];
+    if (pg && pg.items === s.base && pg.past[pg.past.length - 1] === s.base) {
+      pg.past.pop();                       // nothing was erased: no undo step, and Redo still works
+      pg.future = s.future;
+      pageTrash = s.trash;
+    }
     eraseSession = null;
     pruneSel();
     afterChange();
+  }
+  function abortErase() {                  // Undo / Clear board / page change while the eraser is still down
+    if (!eraseSession) return;
+    live.forEach((s, id) => { if (s.erase) live.delete(id); });
+    eraseSession.n = 1;
+    endErase();
+    hideRing();
   }
   function eraseAt(a, b, R) {
     const pg = P();
@@ -1306,7 +1372,45 @@
     const single = list.length === 1 ? list[0] : null;
     const rigid = list.some((it) => it.k === 'text' || it.k === 'math');
     const keepAspect = rigid || list.some((it) => it.k === 'img' || it.k === 'ink');
-    return { list, box: unionBox(list), single, isLine: !!single && single.k === 'line', rigid, keepAspect };
+    return { list, box: unionBox(list), geom: geomBox(list), single, isLine: !!single && single.k === 'line', rigid, keepAspect };
+  }
+  // The box of the shapes themselves (without line thickness): resizing scales around this, so the
+  // opposite corner stays exactly where it is and the dragged corner follows the pointer.
+  function geomBox(list) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const it of list) {
+      let b;
+      if (it.k === 'ink') { const q = bbox(it), r = it.w / 2; b = [q[0] + r, q[1] + r, q[2] - r, q[3] - r]; }
+      else if (it.k === 'rect' || it.k === 'ellipse') b = [it.x, it.y, it.x + it.W, it.y + it.H];
+      else if (it.k === 'line') b = [Math.min(it.x1, it.x2), Math.min(it.y1, it.y2), Math.max(it.x1, it.x2), Math.max(it.y1, it.y2)];
+      else b = bbox(it);
+      if (b[0] < x0) x0 = b[0]; if (b[1] < y0) y0 = b[1];
+      if (b[2] > x1) x1 = b[2]; if (b[3] > y1) y1 = b[3];
+    }
+    return [x0, y0, x1, y1];
+  }
+  // Which handle (if any) a press should grab. Near a handle but on the selected thing itself = move it.
+  // In a shape tool, a press at a corner or end of the last shape starts a new shape (triangles, rows of boxes).
+  function pickHandle(info, pt, type, shapeTool) {
+    const h = handleAt(info, pt, type);
+    if (!h) return null;
+    const onSquare = Math.hypot(h.x - pt.x, h.y - pt.y) <= handleSize() / 2 + (type === 'touch' ? 8 : 3);
+    if (shapeTool) {
+      // only the handle square itself, clearly outside the drawn outline (a finger lands a few px off)
+      const edge = info.list.reduce((m, it) => Math.max(m, (it.w || 0) / 2), 0) + (type === 'touch' ? 5 : 3);
+      return !h.end && onSquare && !inBox(info.geom, pt, edge) ? h : null;
+    }
+    if (onSquare) return h;
+    for (const it of info.list) if (hitItem(it, pt.x, pt.y, 2)) return null;
+    return h;
+  }
+  function startResize(h, info, pt) {
+    const b = info.geom, id = h.id;
+    const ax = id.indexOf('w') >= 0 ? b[2] : id.indexOf('e') >= 0 ? b[0] : (b[0] + b[2]) / 2;
+    const ay = id.indexOf('n') >= 0 ? b[3] : id.indexOf('s') >= 0 ? b[1] : (b[1] + b[3]) / 2;
+    const hx = id.indexOf('w') >= 0 ? b[0] : id.indexOf('e') >= 0 ? b[2] : ax;
+    const hy = id.indexOf('n') >= 0 ? b[1] : id.indexOf('s') >= 0 ? b[3] : ay;
+    return { type: 'resize', h, info, base: P().items, ax, ay, hx, hy, gx: pt.x - hx, gy: pt.y - hy };
   }
   const handleSize = () => Math.max(9, Math.round(uPx * 0.62));
   function handlesFor(info) {
@@ -1314,6 +1418,8 @@
       const it = info.single;
       return [{ id: 'e1', end: 1, x: it.x1, y: it.y1 }, { id: 'e2', end: 2, x: it.x2, y: it.y2 }];
     }
+    const gq = info.geom;
+    if (gq[2] - gq[0] < 2 && gq[3] - gq[1] < 2) return [];          // a dot: nothing to resize, just move it
     const b = padBox(info.box), mx = (b[0] + b[2]) / 2, my = (b[1] + b[3]) / 2;
     const hs = [{ id: 'nw', x: b[0], y: b[1] }, { id: 'ne', x: b[2], y: b[1] }, { id: 'se', x: b[2], y: b[3] }, { id: 'sw', x: b[0], y: b[3] }];
     // side handles only when the box is big enough that they can't cover the thing itself
@@ -1347,39 +1453,49 @@
       default: return Object.assign({}, it, { x: r1(it.x + dx), y: r1(it.y + dy) });
     }
   }
+  // Whole screen pixels keep pictures crisp. Used for a new picture's spot and for drag distances
+  // (the same snapped distance for every selected item, so a group stays lined up).
+  const snapPx = (v) => Math.round(v * dpr) / dpr;
   function scaleItem(it, ax, ay, sx, sy) {
     const X = (v) => r1(ax + (v - ax) * sx), Y = (v) => r1(ay + (v - ay) * sy);
     switch (it.k) {
       case 'ink': {
         const p = new Array(it.p.length);
         for (let i = 0; i < p.length; i += 2) { p[i] = X(it.p[i]); p[i + 1] = Y(it.p[i + 1]); }
-        return Object.assign({}, it, { p, w: r1(clamp(it.w * Math.min(sx, sy), 0.5, 300)) });   // stretching one way keeps the line thickness
+        // stretching one way keeps the line thickness; scaling both ways scales it (never below 1px)
+        return Object.assign({}, it, { p, w: sx === sy ? r1(clamp(it.w * sx, Math.min(1, it.w), 300)) : it.w });
       }
       case 'line': return Object.assign({}, it, { x1: X(it.x1), y1: Y(it.y1), x2: X(it.x2), y2: Y(it.y2) });
-      case 'text': return Object.assign({}, it, { x: X(it.x), y: Y(it.y), s: r1(clamp(it.s * Math.sqrt(sx * sy), 6, 800)) });
+      case 'text': {
+        const k = clamp(Math.sqrt(sx * sy), 6 / it.s, 800 / it.s);   // same factor for size and position
+        return Object.assign({}, it, { x: r1(ax + (it.x - ax) * k), y: r1(ay + (it.y - ay) * k), s: r1(it.s * k) });
+      }
       default: return Object.assign({}, it, { x: X(it.x), y: Y(it.y), W: r1(Math.max(1, it.W * sx)), H: r1(Math.max(1, it.H * sy)) });
     }
   }
   function resizePreview(g, pt, shift) {
-    const b = g.box, id = g.h.id;
-    const ax = id.indexOf('w') >= 0 ? b[2] : id.indexOf('e') >= 0 ? b[0] : (b[0] + b[2]) / 2;
-    const ay = id.indexOf('n') >= 0 ? b[3] : id.indexOf('s') >= 0 ? b[1] : (b[1] + b[3]) / 2;
-    const hx = id.indexOf('w') >= 0 ? b[0] : id.indexOf('e') >= 0 ? b[2] : ax;
-    const hy = id.indexOf('n') >= 0 ? b[1] : id.indexOf('s') >= 0 ? b[3] : ay;
-    const bw = Math.max(1, b[2] - b[0]), bh = Math.max(1, b[3] - b[1]);
+    const ax = g.ax, ay = g.ay, id = g.h.id;
+    const px = pt.x - g.gx, py = pt.y - g.gy;            // where the grabbed edge should now be
+    const gw = g.hx - ax, gh = g.hy - ay;                // anchor -> handle, along each axis
+    const MIN = 6;
+    const fx = () => (Math.abs(gw) > 0.5 ? Math.max((px - ax) / gw, MIN / Math.abs(gw)) : 1);
+    const fy = () => (Math.abs(gh) > 0.5 ? Math.max((py - ay) / gh, MIN / Math.abs(gh)) : 1);
     let sx = 1, sy = 1;
+    const aw = Math.abs(gw), ah = Math.abs(gh), shorter = Math.min(aw, ah), longer = Math.max(aw, ah);
     if (id.length === 2) {
-      const uniform = g.info.rigid || (g.info.keepAspect ? !shift : shift);
-      if (uniform) {
-        const vx = hx - ax, vy = hy - ay;
-        const s = Math.max(((pt.x - ax) * vx + (pt.y - ay) * vy) / (vx * vx + vy * vy), 12 / Math.min(bw, bh));
+      const thin = shorter < 12 && !g.info.rigid;        // an underline, a fraction bar, a straight stroke
+      const uniform = !thin && (g.info.rigid || (g.info.keepAspect ? !shift : shift));
+      const L2 = gw * gw + gh * gh;
+      if (thin) {                                        // only make it longer / shorter; keep its thickness
+        if (aw >= ah) sx = fx(); else sy = fy();
+      } else if (uniform && L2 > 0.25) {
+        // the smallest size keeps the short side at 12px, so nothing collapses into a speck
+        const s = Math.max(((px - ax) * gw + (py - ay) * gh) / L2, shorter >= 12 ? 12 / shorter : MIN / longer);
         sx = sy = s;
-      } else {
-        sx = Math.max((pt.x - ax) / (hx - ax), 8 / bw);
-        sy = Math.max((pt.y - ay) / (hy - ay), 8 / bh);
-      }
-    } else if (id === 'e' || id === 'w') sx = Math.max((pt.x - ax) / (hx - ax), 8 / bw);
-    else sy = Math.max((pt.y - ay) / (hy - ay), 8 / bh);
+      } else { sx = fx(); sy = fy(); }
+    } else if (id === 'e' || id === 'w') sx = fx();
+    else sy = fy();
+    g.sx = sx; g.sy = sy;
     g.scale = Math.max(sx, sy);
     g.preview = g.base.map((it) => (sel.has(it.id) ? scaleItem(it, ax, ay, sx, sy) : it));
   }
@@ -1395,6 +1511,8 @@
       const o = g.h.end === 1 ? { x: it0.x2, y: it0.y2 } : { x: it0.x1, y: it0.y1 };
       const s = snapAngle(o.x, o.y, x, y); x = s.x; y = s.y;
     }
+    const o = g.h.end === 1 ? { x: it0.x2, y: it0.y2 } : { x: it0.x1, y: it0.y1 };
+    if (Math.hypot(x - o.x, y - o.y) < 4) return;          // never shrink a line to nothing
     g.preview = g.base.map((it) => {
       if (it.id !== it0.id) return it;
       return g.h.end === 1 ? Object.assign({}, it, { x1: r1(x), y1: r1(y) }) : Object.assign({}, it, { x2: r1(x), y2: r1(y) });
@@ -1453,8 +1571,7 @@
     if (e.pointerType === 'mouse' && e.button === 2) { rightSelect(e); return; }
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.preventDefault();
-    closeTray();
-    if (dlg) closeDialog();
+    if (dlg) { closeDialog(); return; }          // that tap only closes the formula / graph window
     rect = board.getBoundingClientRect();
     const pt = pos(e);
     const stylusEraser = e.button === 5 || (e.pointerType === 'pen' && (e.buttons & 32) === 32);
@@ -1543,7 +1660,7 @@
     live.delete(e.pointerId);
     if (s.erase) {
       endErase();
-      if (e.pointerType === 'touch') hideRing();
+      if (e.pointerType === 'touch' || tool !== 'eraser') hideRing();   // also after a stylus's eraser end
       renderNow();
       return;
     }
@@ -1556,9 +1673,15 @@
   function selectDown(e, pt) {
     const tol = tolFor(e.pointerType);
     const info = selInfo();
+    const move = (collapse) => { gesture = { type: 'move', start: pt, base: P().items, moved: false, dx: 0, dy: 0, collapse: collapse == null ? null : collapse }; };
     if (info) {
-      const h = handleAt(info, pt, e.pointerType);
-      if (h) { gesture = { type: h.end ? 'end' : 'resize', h, info, box: padBox(info.box), base: P().items }; return; }
+      const h = pickHandle(info, pt, e.pointerType, false);
+      if (h) { gesture = h.end ? { type: 'end', h, info, base: P().items } : startResize(h, info, pt); return; }
+    }
+    if (e.altKey) {                                   // Alt + drag: always a selection box, even on a picture
+      gesture = { type: 'marquee', start: pt, cur: pt, add: e.shiftKey, prev: new Set(sel), cands: [] };
+      if (!e.shiftKey) sel.clear();
+      return;
     }
     const hit = hitTest(P().items, pt, tol);
     const now = performance.now();
@@ -1567,18 +1690,17 @@
       if (editItem(hit)) return;
     }
     lastTap = hit ? { id: hit.id, t: now, x: pt.x, y: pt.y } : null;
-    if (info && inBox(padBox(info.box), pt, 2) && !(e.shiftKey && hit)) {
-      gesture = { type: 'move', start: pt, base: P().items, moved: false, collapse: hit && sel.size > 1 ? hit.id : null };
+    if (hit && !sel.has(hit.id)) {                    // something else, even inside the current box: take it
+      if (e.shiftKey) sel.add(hit.id); else sel = new Set([hit.id]);
+      move(null);
       return;
     }
-    if (hit) {
-      if (e.shiftKey) {
-        if (sel.has(hit.id)) { sel.delete(hit.id); return; }
-        sel.add(hit.id);
-      } else if (!sel.has(hit.id)) sel = new Set([hit.id]);
-      gesture = { type: 'move', start: pt, base: P().items, moved: false, collapse: null };
+    if (hit) {                                         // part of the selection
+      if (e.shiftKey) { sel.delete(hit.id); return; }
+      move(sel.size > 1 ? hit.id : null);
       return;
     }
+    if (info && !info.isLine && inBox(padBox(info.box), pt, 2)) { move(null); return; }   // empty spot inside the box
     gesture = { type: 'marquee', start: pt, cur: pt, add: e.shiftKey, prev: new Set(sel), cands: [] };
     if (!e.shiftKey) sel.clear();
   }
@@ -1587,8 +1709,8 @@
   function shapeDown(e, pt) {
     const info = selInfo();
     if (info) {
-      const h = handleAt(info, pt, e.pointerType);
-      if (h) { gesture = { type: h.end ? 'end' : 'resize', h, info, box: padBox(info.box), base: P().items }; return; }
+      const h = pickHandle(info, pt, e.pointerType, true);
+      if (h) { gesture = startResize(h, info, pt); return; }
     }
     sel.clear();
     gesture = { type: 'shape', kind: tool, start: pt, cur: pt, shift: e.shiftKey };
@@ -1601,7 +1723,7 @@
         const dx = pt.x - g.start.x, dy = pt.y - g.start.y;
         const slop = e.pointerType === 'touch' ? 8 : 3;
         if (!g.moved && dx * dx + dy * dy < slop * slop) return;
-        g.moved = true;
+        g.moved = true; g.dx = dx; g.dy = dy;
         g.preview = g.base.map((it) => (sel.has(it.id) ? moveItem(it, dx, dy) : it));
         requestRender();
         break;
@@ -1622,18 +1744,24 @@
   function gestureUp(e, g) {
     gesture = null;
     switch (g.type) {
-      case 'move':
-        if (g.moved && g.preview) commit(g.preview);
-        else { if (g.collapse != null && !e.shiftKey) sel = new Set([g.collapse]); renderNow(); }
+      case 'move': {
+        const dx = snapPx(g.dx || 0), dy = snapPx(g.dy || 0);     // one snapped distance for everything selected
+        if (g.moved && (dx || dy)) commit(g.base.map((it) => (sel.has(it.id) ? moveItem(it, dx, dy) : it)));
+        else { if (!g.moved && g.collapse != null && !e.shiftKey) sel = new Set([g.collapse]); renderNow(); }
         break;
+      }
       case 'resize': {
-        if (!g.preview) { renderNow(); break; }
+        if (!g.preview || (Math.abs(g.sx - 1) < 1e-6 && Math.abs(g.sy - 1) < 1e-6)) { renderNow(); break; }   // back where it started
         let next = g.preview;
         if (g.scale > 1.3) next = next.map((it) => (sel.has(it.id) && it.k === 'ink' && it.p.length > 2 ? Object.assign({}, it, { p: densify(it.p) }) : it));
         commit(next);
         break;
       }
-      case 'end': if (g.preview) commit(g.preview); else renderNow(); break;
+      case 'end': {
+        const a = g.info.single, b = g.preview && g.preview.find((it) => it.id === a.id);
+        if (b && (b.x1 !== a.x1 || b.y1 !== a.y1 || b.x2 !== a.x2 || b.y2 !== a.y2)) commit(g.preview); else renderNow();
+        break;
+      }
       case 'marquee': {
         const ids = P().items.filter((it) => inRect(it, normRect(g.start, g.cur))).map((it) => it.id);
         sel = new Set(g.add ? Array.from(g.prev).concat(ids) : ids);
@@ -1656,6 +1784,7 @@
   }
   function cancelGesture() {
     if (!gesture) return;
+    if (gesture.type === 'laser') { laser.dot = null; setCursor(null); }    // don't leave the red dot behind
     gesture = null;
     renderNow();
   }
@@ -1667,11 +1796,12 @@
     else if (tool === 'select' || isShape(tool)) {
       c = tool === 'select' ? 'default' : 'crosshair';
       const info = pt && selInfo();
-      const h = info && handleAt(info, pt, 'mouse');
+      const h = info && pickHandle(info, pt, 'mouse', tool !== 'select');
       if (h) c = h.end ? 'move' : CURSORS[h.id];
       else if (tool === 'select' && pt) {
-        if (info && inBox(padBox(info.box), pt, 2)) c = 'move';
-        else if (hitTest(P().items, pt, 6)) c = 'pointer';
+        const hit = hitTest(P().items, pt, 6);
+        if (hit) c = sel.has(hit.id) ? 'move' : 'pointer';
+        else if (info && !info.isLine && inBox(padBox(info.box), pt, 2)) c = 'move';
       }
     }
     if (board.style.cursor !== c) board.style.cursor = c;
@@ -1733,19 +1863,22 @@
     return { x: Math.round(rect.width * 0.04), y: Math.round(rect.height * 0.05) };
   }
   function openEditor(orig, x, y, initial) {
+    const s = orig ? orig.s : textSize(textSizeKey);
     editing = {
       orig: orig || null,
       c: orig ? orig.c : color,
-      s: orig ? orig.s : textSize(textSizeKey),
-      x: orig ? orig.x : x,
-      y: orig ? orig.y : y,
+      s,
+      x: orig ? orig.x : r1(clamp(x, 2, Math.max(2, rect.width - s * 2))),
+      y: orig ? orig.y : r1(clamp(y, 2, Math.max(2, rect.height - s * LH - 2))),
+      touched: false,                    // has anything been typed in this box yet?
     };
-    ed.value = orig ? orig.t : (initial || '');
+    ed.value = orig ? orig.t : '';
     ed.hidden = false; edbar.hidden = false;
     styleEditor();
     ed.focus({ preventScroll: true });
     const L = ed.value.length;
     ed.setSelectionRange(L, L);
+    if (initial) insertInEditor(initial);   // typed like any other letter, so Ctrl+Z can take it back
     renderNow();
   }
   function styleEditor() {
@@ -1758,27 +1891,46 @@
     ed.style.caretColor = e.c;
     edbar.querySelectorAll('[data-ts]').forEach((b) => b.classList.toggle('on', textSize(b.dataset.ts) === e.s));
     edbar.querySelectorAll('[data-ec]').forEach((b) => b.classList.toggle('on', b.dataset.ec === e.c));
-    sizeEditor();
+    sizeEditor(false);
   }
-  function sizeEditor() {
+  // slide = true: a growing text slides left / up instead of running off the board
+  // (only while typing or after the window shrinks; just opening a text never moves it)
+  function sizeEditor(slide) {
     if (!editing) return;
     const s = editing.s;
     mctx.font = fontFor(s);
     const lines = ed.value.split('\n');
     let w = 0;
     for (const l of lines) w = Math.max(w, mctx.measureText(l).width);
-    ed.style.width = Math.ceil(w + s * 0.6) + 'px';
-    ed.style.height = Math.ceil(lines.length * s * LH) + 'px';
+    const W = Math.ceil(w + s * 0.6), H = Math.ceil(lines.length * s * LH);
+    ed.style.width = W + 'px';
+    ed.style.height = H + 'px';
+    if (slide === false) { placeBars(); return; }
+    const nx = editing.x + W > rect.width - 4 ? Math.max(2, rect.width - 4 - W) : editing.x;
+    const ny = editing.y + H > rect.height - 4 ? Math.max(2, rect.height - 4 - H) : editing.y;
+    if (nx !== editing.x || ny !== editing.y) {
+      editing.x = r1(nx); editing.y = r1(ny);
+      ed.style.left = editing.x + 'px'; ed.style.top = editing.y + 'px';
+    }
     placeBars();
   }
-  ed.addEventListener('input', sizeEditor);
+  ed.addEventListener('input', () => { if (editing) editing.touched = true; sizeEditor(true); scheduleSave(); });
   ed.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
       e.preventDefault(); e.stopPropagation(); finishText();
     } else if (e.key === 'Tab') {
-      e.preventDefault(); ed.setRangeText('    ', ed.selectionStart, ed.selectionEnd, 'end'); sizeEditor();
+      e.preventDefault(); insertInEditor('    ');
+    } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key || '').toLowerCase() === 'z' && !ed.value && editing && !editing.touched && !editing.orig) {
+      e.preventDefault(); e.stopPropagation(); finishText(); undo();     // a brand-new empty box: undo the board instead
     }
   });
+  function insertInEditor(str) {             // keeps Ctrl+Z working inside the box
+    ed.focus({ preventScroll: true });
+    let ok = false;
+    try { ok = document.execCommand('insertText', false, str); } catch (_) { ok = false; }
+    if (!ok) ed.setRangeText(str, ed.selectionStart, ed.selectionEnd, 'end');
+    sizeEditor();
+  }
   ed.addEventListener('blur', () => {
     setTimeout(() => {
       if (editing && document.activeElement !== ed && document.hasFocus()) finishText();
@@ -1797,8 +1949,8 @@
     if (e.orig) {
       if (!items.some((it) => it.id === e.orig.id)) { renderNow(); return; }
       if (!t) commit(items.filter((it) => it.id !== e.orig.id));
-      else if (t !== e.orig.t || e.s !== e.orig.s || e.c !== e.orig.c) {
-        commit(items.map((it) => (it.id === e.orig.id ? Object.assign({}, it, { t, s: e.s, c: e.c }) : it)));
+      else if (t !== e.orig.t || e.s !== e.orig.s || e.c !== e.orig.c || e.x !== e.orig.x || e.y !== e.orig.y) {
+        commit(items.map((it) => (it.id === e.orig.id ? Object.assign({}, it, { t, s: e.s, c: e.c, x: e.x, y: e.y }) : it)));
       } else renderNow();
     } else if (t) {
       commit(items.concat([{ id: nid++, k: 'text', c: e.c, s: e.s, x: r1(e.x), y: r1(e.y), t }]));
@@ -1811,7 +1963,7 @@
     if (!b || !editing) return;
     if (b.dataset.ts) { textSizeKey = b.dataset.ts; editing.s = textSize(b.dataset.ts); styleEditor(); }
     else if (b.dataset.ec) { editing.c = b.dataset.ec; color = b.dataset.ec; styleEditor(); }
-    else if (b.dataset.sym) { ed.setRangeText(b.dataset.sym, ed.selectionStart, ed.selectionEnd, 'end'); sizeEditor(); }
+    else if (b.dataset.sym) insertInEditor(b.dataset.sym);
     ed.focus({ preventScroll: true });
   });
 
@@ -1893,8 +2045,12 @@
     sel.clear();
     commit(next);
   }
-  function nudge(dx, dy) {
-    commit(P().items.map((it) => (sel.has(it.id) ? moveItem(it, dx, dy) : it)));
+  function nudge(dx, dy) {                   // a run of arrow presses on the same selection is one undo step
+    const pg = P(), next = pg.items.map((it) => (sel.has(it.id) ? moveItem(it, dx, dy) : it));
+    const now = performance.now(), key = Array.from(sel).join(',');
+    if (lastNudge && lastNudge.items === pg.items && lastNudge.key === key && now - lastNudge.t < 1200) { pg.items = next; afterChange(); }
+    else commit(next);
+    lastNudge = { items: pg.items, t: now, key };
   }
   function selectAll() {
     finishText();
@@ -1971,7 +2127,10 @@
   function closeTray() { if (tray.hidden) return; tray.hidden = true; moreBtn.setAttribute('aria-expanded', 'false'); }
   moreBtn.addEventListener('click', () => (tray.hidden ? openTray() : closeTray()));
   document.addEventListener('pointerdown', (e) => {
-    if (!tray.hidden && !tray.contains(e.target) && !moreBtn.contains(e.target)) closeTray();
+    if (!tray.hidden && !tray.contains(e.target) && !moreBtn.contains(e.target)) {
+      closeTray();
+      if (e.target === canvas) { e.preventDefault(); e.stopPropagation(); }   // that tap only closes the tray
+    }
   }, true);
   tray.addEventListener('click', (e) => {
     const b = e.target.closest('button');
@@ -1997,18 +2156,17 @@
 
   function setGrid(g) {
     grid = g;
-    board.classList.toggle('grid-sq', g === 'sq');
-    board.classList.toggle('grid-dot', g === 'dot');
     tray.querySelector('[data-act="squares"]').setAttribute('aria-pressed', String(g === 'sq'));
     tray.querySelector('[data-act="dots"]').setAttribute('aria-pressed', String(g === 'dot'));
+    requestRender();
     scheduleSave();
   }
 
   // ----- pages -----
   function goPage(i) {
     i = clamp(i, 0, pages.length - 1);
-    finishText(); cancelGesture();
-    live.clear(); eraseSession = null; hideRing();
+    finishText(); cancelGesture(); abortErase();
+    live.clear(); hideRing();
     sel.clear();
     cur = i;
     pageTrash = null;
@@ -2022,7 +2180,7 @@
   }
   function deletePage() {
     if (pages.length < 2) return;
-    finishText(); cancelGesture();
+    finishText(); cancelGesture(); abortErase();
     const idx = cur;
     const gone = pages.splice(idx, 1)[0];
     cur = Math.min(idx, pages.length - 1);
@@ -2037,32 +2195,75 @@
   // ======================================================================
   const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   async function registerImage(id, blob) {
+    let entry = null;
     try {
       const bmp = await createImageBitmap(blob);
-      imgs.set(id, { blob, bmp });
-      requestRender();
-      return bmp;
-    } catch (_) { return null; }
+      entry = { blob, bmp, w: bmp.width, h: bmp.height, vector: false };
+    } catch (_) {
+      entry = await rasterize(blob);         // SVG and anything else createImageBitmap refuses
+      if (entry) entry.blob = blob;
+    }
+    if (!entry) return null;
+    imgs.set(id, entry);
+    requestRender();
+    return entry;
   }
-  async function addImageBlob(blob, at, quiet) {
-    if (!blob || !/^image\//.test(blob.type || 'image/')) return;
-    const id = rid();
-    const bmp = await registerImage(id, blob);
-    if (!bmp) { toast('That picture could not be opened.'); return; }
-    idbPut('img:' + id, { blob, t: Date.now() });
+  function rasterize(blob) {
+    return new Promise((res) => {
+      const url = URL.createObjectURL(blob), im = new Image();
+      const done = (v) => { URL.revokeObjectURL(url); res(v); };
+      im.onload = async () => {
+        try {
+          const w = im.naturalWidth || 300, h = im.naturalHeight || 150;
+          const k = Math.min(2, 4096 / Math.max(w, h));   // drawn at twice the size so it stays sharp
+          const c = document.createElement('canvas');
+          c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
+          c.getContext('2d').drawImage(im, 0, 0, c.width, c.height);
+          done({ bmp: await createImageBitmap(c), w, h, vector: true });
+        } catch (_) { done(null); }
+      };
+      im.onerror = () => done(null);
+      im.src = url;
+    });
+  }
+  // Adds one or more pictures in one undo step. Several pictures are laid out side by side, in order.
+  async function addImages(blobs, at) {
+    const list = blobs.filter((b) => b && /^image\//.test(b.type || 'image/'));
+    if (!list.length) return;
+    const loaded = [];
+    for (const blob of list) {
+      const id = rid(), im = await registerImage(id, blob);
+      if (im) { loaded.push({ id, im }); idbPut('img:' + id, { blob, t: Date.now() }); }
+    }
+    if (!loaded.length) { toast('That picture could not be opened.'); return; }
+    finishText(); cancelGesture(); abortErase();
     rect = board.getBoundingClientRect();
-    const d = window.devicePixelRatio || 1;
-    let W = bmp.width / d, H = bmp.height / d;
-    const f = Math.min(1, (rect.width * 0.8) / W, (rect.height * 0.8) / H);
-    W *= f; H *= f;
-    const c = at || { x: rect.width / 2, y: rect.height / 2 };
-    const it = { id: nid++, k: 'img', src: id, x: r1(clamp(c.x - W / 2, 0, Math.max(0, rect.width - W))), y: r1(clamp(c.y - H / 2, 0, Math.max(0, rect.height - H))), W: r1(W), H: r1(H) };
-    finishText();
+    const d = window.devicePixelRatio || 1, n = loaded.length;
+    const cols = Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols);
+    const cellW = (rect.width * 0.86) / cols, cellH = (rect.height * 0.86) / rows;
+    const items = loaded.map(({ id, im }, i) => {
+      let W = im.vector ? im.w : im.w / d, H = im.vector ? im.h : im.h / d;   // a screenshot shows at its real size
+      const f = n === 1 ? Math.min(1, (rect.width * 0.8) / W, (rect.height * 0.8) / H) : Math.min(1, (cellW * 0.94) / W, (cellH * 0.94) / H);
+      W *= f; H *= f;
+      let cx, cy;
+      if (n === 1) { const c = at || { x: rect.width / 2, y: rect.height / 2 }; cx = c.x; cy = c.y; }
+      else { cx = rect.width * 0.07 + cellW * (i % cols + 0.5); cy = rect.height * 0.07 + cellH * (Math.floor(i / cols) + 0.5); }
+      let x = clamp(cx - W / 2, 0, Math.max(0, rect.width - W)), y = clamp(cy - H / 2, 0, Math.max(0, rect.height - H));
+      if (n === 1) { const s = freeSpot(x, y, W, H); x = s.x; y = s.y; }
+      return { id: nid++, k: 'img', src: id, x: snapPx(x), y: snapPx(y), W: r1(W), H: r1(H) };
+    });
+    // the same set chosen again: shift the whole layout so it doesn't hide exactly on the first one
+    for (let k = 0; n > 1 && k < 20 && items.some((a) => P().items.some((b) => b.k === 'img' && Math.abs(b.x - a.x) < 4 && Math.abs(b.y - a.y) < 4)); k++) {
+      items.forEach((a) => { a.x = snapPx(a.x + 24); a.y = snapPx(a.y + 24); });
+    }
     if (tool !== 'select') setTool('select');
-    sel = new Set([it.id]);
-    commit(P().items.concat([it]));
-    if (!quiet) toast('Picture added. Drag it to move, drag a corner to resize.', 2600);
+    sel = new Set(items.map((it) => it.id));
+    commit(P().items.concat(items));
+    let msg = n === 1 ? 'Picture added. Drag it to move, drag a corner to resize.' : n + ' pictures added.';
+    if (loaded.length < list.length) msg += ' ' + (list.length - loaded.length) + ' could not be opened.';
+    toast(msg, 2600);
   }
+  const addImageBlob = (blob, at) => addImages([blob], at);
   async function pastePicture() {
     if (!navigator.clipboard || !navigator.clipboard.read) { toast('Press Ctrl+V to paste a screenshot.'); return; }
     try {
@@ -2071,6 +2272,8 @@
         const type = ci.types.find((t) => t.indexOf('image/') === 0);
         if (type) { addImageBlob(await ci.getType(type)); return; }
       }
+      // a board copy reads back as an empty clipboard; anything else means something newer was copied
+      if (clip && clip.length && list.every((ci) => !ci.types.length)) { pasteClip(); return; }
       toast('No picture copied yet. Take a screenshot (Win+Shift+S), then Paste or Ctrl+V.', 3500);
     } catch (_) {
       toast('Press Ctrl+V to paste a screenshot.');
@@ -2078,21 +2281,21 @@
   }
   filePic.addEventListener('change', () => {
     const files = Array.from(filePic.files || []);
-    files.forEach((f, i) => addImageBlob(f, { x: rect.width / 2 + i * 24, y: rect.height / 2 + i * 24 }, i > 0));
     filePic.value = '';
+    addImages(files);
   });
   document.addEventListener('dragover', (e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; });
   document.addEventListener('drop', (e) => {
     e.preventDefault();
     const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []);
     if (!files.length) return;
+    if (dlg) { toast('Close the formula / graph window first, then drop the file.'); return; }
     rect = board.getBoundingClientRect();
-    const pt = pos(e);
-    let n = 0;
-    for (const f of files) {
-      if (/^image\//.test(f.type)) { addImageBlob(f, { x: pt.x + n * 24, y: pt.y + n * 24 }, n > 0); n++; }
-      else if (/\.json$/i.test(f.name) || f.type === 'application/json') openLessonFile(f);
-    }
+    const pics = files.filter((f) => /^image\//.test(f.type));
+    const lessons = files.filter((f) => !/^image\//.test(f.type) && (/\.json$/i.test(f.name) || f.type === 'application/json'));
+    if (pics.length) addImages(pics, pics.length === 1 ? pos(e) : null);
+    lessons.forEach(openLessonFile);
+    if (!pics.length && !lessons.length) toast('Only pictures and saved lesson files can be dropped on the board.');
   });
 
   // ======================================================================
@@ -2110,22 +2313,30 @@
       if (EXTRA.has(tool)) setTool('pen');
       return;
     }
-    if (typingIn(e.target)) return;                       // text boxes keep their own keys
     const mod = e.ctrlKey || e.metaKey;
     const k = (e.key || '').toLowerCase();
+    if (mod && !e.altKey && (k === 's' || k === 'o')) {  // save / open a lesson, even while typing
+      e.preventDefault();
+      if (k === 's') saveLesson(); else fileLesson.click();
+      return;
+    }
+    if (dlg) {                                            // the formula / graph window keeps every other key
+      if (mod && k === 'd') e.preventDefault();           // no browser bookmark dialog
+      if (e.repeat && !mod && dlg.key === k) e.preventDefault();   // holding F / G doesn't type it into the window
+      return;
+    }
+    if (typingIn(e.target)) { if (mod && k === 'd') e.preventDefault(); return; }   // text boxes keep their own keys
     if (mod && !e.altKey) {
       if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
       else if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
       else if (k === 'a') { e.preventDefault(); selectAll(); }
       else if (k === 'd') { e.preventDefault(); duplicate(); }
-      else if (k === 's') { e.preventDefault(); saveLesson(); }
-      else if (k === 'o') { e.preventDefault(); fileLesson.click(); }
       return;                                             // Ctrl+C / X / V arrive as copy / cut / paste
     }
     if (e.altKey) return;
     if (tool === 'text' && !editing && e.key.length === 1) {
       e.preventDefault();
-      const spot = textSpot();
+      const t0 = textSpot(), spot = freeSpot(t0.x, t0.y);   // never on top of the last text
       openEditor(null, spot.x, spot.y, e.key);
       return;
     }
@@ -2139,20 +2350,26 @@
     if (e.key === 'PageDown') { e.preventDefault(); goPage(cur + 1); return; }
     if (e.key === 'PageUp') { e.preventDefault(); goPage(cur - 1); return; }
     if (e.repeat) return;
-    if (KEYS[k]) { setTool(KEYS[k]); hint(KEYS[k]); return; }
-    if (k === 'f') { openFormula(null); return; }
-    if (k === 'g') { openGraph(null); return; }
+    if (KEYS[k]) { e.preventDefault(); closeTray(); setTool(KEYS[k]); hint(KEYS[k]); return; }
+    if (k === 'f') { e.preventDefault(); openFormula(null); if (dlg) dlg.key = 'f'; return; }   // preventDefault: don't type the "f" into the window
+    if (k === 'g') { e.preventDefault(); openGraph(null); if (dlg) dlg.key = 'g'; return; }
   });
+  document.addEventListener('keyup', (e) => {
+    if (dlg && dlg.key && (e.key || '').toLowerCase() === dlg.key) dlg.key = null;
+  });
+  // Copied board items travel as a private clipboard type, so no stray text lands in other apps.
+  const CLIP_TYPE = 'application/x-math-board';
   document.addEventListener('copy', (e) => {
     if (typingIn(e.target) || !sel.size || !e.clipboardData) return;
     copySel();
-    e.clipboardData.setData('text/plain', clipTag);
+    e.clipboardData.setData(CLIP_TYPE, clipTag);
     e.preventDefault();
   });
   document.addEventListener('cut', (e) => {
     if (typingIn(e.target) || !sel.size || !e.clipboardData) return;
     copySel();
-    e.clipboardData.setData('text/plain', clipTag);
+    clipN = -1;                                           // the first paste after a cut goes back in the same place
+    e.clipboardData.setData(CLIP_TYPE, clipTag);
     e.preventDefault();
     deleteSel();
   });
@@ -2163,6 +2380,7 @@
   }
   function pasteClip() {
     if (!clip || !clip.length) return;
+    if (clipN === -1 && clip.some((c) => P().items.some((it) => it.id === c.id))) clipN = 0;   // cut was undone: don't hide a copy on top
     clipN++;
     const copies = clip.filter((it) => it.k !== 'img' || imgs.has(it.src)).map((it) => Object.assign(moveItem(it, 18 * clipN, 18 * clipN), { id: nid++ }));
     if (!copies.length) return;
@@ -2179,13 +2397,27 @@
       if (item.kind === 'file' && item.type.indexOf('image/') === 0) { file = item.getAsFile(); break; }
     }
     if (!file && dt.files && dt.files.length && /^image\//.test(dt.files[0].type)) file = dt.files[0];
-    if (file) { e.preventDefault(); finishText(); addImageBlob(file); return; }
+    if (file) {
+      e.preventDefault();
+      if (dlg) { toast('Close the formula / graph window first, then paste the picture.'); return; }
+      finishText(); addImageBlob(file);
+      return;
+    }
+    if (dlg && !typingIn(e.target)) { e.preventDefault(); return; }   // nothing goes behind the open window
+    let tag = '';
+    try { tag = dt.getData(CLIP_TYPE); } catch (_) { tag = ''; }
+    if (tag) {
+      e.preventDefault();
+      if (typingIn(e.target)) return;                     // board items can't go inside a text box
+      if (clip && tag === clipTag) pasteClip(); else toast('Copy it again on this board, then paste.');
+      return;
+    }
     if (typingIn(e.target)) return;                       // normal text paste into a text box
     const text = dt.getData('text/plain');
-    if (clip && (text === clipTag || !text)) { e.preventDefault(); pasteClip(); return; }
+    if (clip && !text) { e.preventDefault(); pasteClip(); return; }
     if (text && text.trim()) {
       e.preventDefault();
-      const s = textSize(textSizeKey), spot = textSpot();
+      const s = textSize(textSizeKey), t0 = textSpot(), spot = freeSpot(t0.x, t0.y);
       finishText();
       const it = { id: nid++, k: 'text', c: color, s, x: spot.x, y: spot.y, t: text.replace(/\r\n?/g, '\n').replace(/\t/g, '    ').replace(/\s+$/, '') };
       if (tool !== 'select') setTool('select');
@@ -2224,7 +2456,31 @@
     return mjPromise;
   }
   const FORMULA_PX = () => textSize('m');
+  const formulaError = (err) => (err && (err.message === 'offline' || err.message === 'timeout')
+    ? 'Formulas need an internet connection (the maths font could not load).'
+    : (err && err.message) || 'Could not read that formula.');
+  // Don't land on top of something already there (same corner or same centre), and stay on the board.
+  function freeSpot(x, y, W, H) {
+    W = W || 0; H = H || 0;
+    const items = P().items;
+    const taken = (px, py) => items.some((it) => {
+      const b = bbox(it);
+      return (Math.abs(b[0] - px) < 4 && Math.abs(b[1] - py) < 4) ||
+        (Math.abs((b[0] + b[2]) / 2 - (px + W / 2)) < 10 && Math.abs((b[1] + b[3]) / 2 - (py + H / 2)) < 10);
+    });
+    const fits = (px, py) => px >= 0 && py >= 0 && px + W <= rect.width + 0.5 && py + H <= rect.height + 0.5;
+    for (const step of [24, -24]) {
+      for (let n = 0; n < 30; n++) {
+        const px = x + n * step, py = y + n * step;
+        if (n > 0 && !fits(px, py)) break;
+        if (!taken(px, py)) return { x: r1(px), y: r1(py) };
+      }
+    }
+    return { x: r1(x), y: r1(y) };
+  }
   async function renderFormula(src) {
+    src = String(src).trim().replace(/^\$+|\$+$/g, '').trim();      // people paste $...$ from LaTeX
+    if (!src) throw new Error('Type a formula first.');
     const MJ = await loadMathJax();
     const tex = src.indexOf('\\') >= 0;
     const node = tex ? await MJ.tex2svgPromise(src, { display: true }) : await MJ.asciimath2svgPromise(src, { display: true });
@@ -2236,6 +2492,7 @@
     meas.textContent = '';
     meas.appendChild(node);
     const r = svg.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) { meas.textContent = ''; throw new Error('There is nothing to show in that formula.'); }
     const w = Math.max(4, r.width), h = Math.max(4, r.height);
     svg.setAttribute('width', w.toFixed(2));
     svg.setAttribute('height', h.toFixed(2));
@@ -2276,6 +2533,7 @@
   async function previewFormula() {
     const src = fIn.value.trim(), seq = ++prevSeq;
     if (!src) { fPrev.textContent = 'Preview'; dErr.textContent = ''; return; }
+    if (!(window.MathJax && window.MathJax.tex2svgPromise)) fPrev.textContent = 'Loading the maths font…';
     try {
       const r = await renderFormula(src);
       if (seq !== prevSeq || !dlg || dlg.kind !== 'formula') return;
@@ -2286,7 +2544,8 @@
       dErr.textContent = '';
     } catch (err) {
       if (seq !== prevSeq || !dlg) return;
-      dErr.textContent = err && err.message === 'offline' ? 'Formulas need an internet connection.' : (err && err.message) || 'Could not read that formula.';
+      dErr.textContent = formulaError(err);
+      if (fPrev.textContent === 'Loading the maths font…') fPrev.textContent = 'Preview';
     }
   }
   fIn.addEventListener('input', () => { clearTimeout(prevTimer); prevTimer = setTimeout(previewFormula, 220); });
@@ -2302,12 +2561,28 @@
         const old = P().items.find((it) => it.id === d.edit.id);
         closeDialog();
         if (!old) return;
-        const k = old.W / (old.bw || old.W);
-        commit(P().items.map((it) => (it.id === old.id ? Object.assign({}, it, { src, svg: r.svg, bw: r.w, bh: r.h, W: r1(r.w * k), H: r1(r.h * k), c: d.c }) : it)));
+        if (src === old.src && d.c === old.c) { renderNow(); return; }      // nothing changed: no undo step
+        rect = board.getBoundingClientRect();
+        const fitK = Math.min(1, (rect.width * 0.9) / r.w, (rect.height * 0.8) / r.h);
+        // keep the size the teacher gave it, but a formula that was only shrunk to fit is fitted again
+        const k = old.fit ? fitK : Math.min(old.W / (old.bw || old.W), fitK);
+        const upd = { src, svg: r.svg, bw: r.w, bh: r.h, W: r1(r.w * k), H: r1(r.h * k), c: d.c };
+        if (k < 1 && k === fitK) upd.fit = 1;
+        commit(P().items.map((it) => {
+          if (it.id !== old.id) return it;
+          const o = Object.assign({}, it, upd);
+          if (!upd.fit) delete o.fit;
+          return o;
+        }));
       } else {
         closeDialog();
+        cancelGesture(); abortErase();
         rect = board.getBoundingClientRect();
-        const it = { id: nid++, k: 'math', c: d.c, src, svg: r.svg, bw: r.w, bh: r.h, W: r1(r.w), H: r1(r.h), x: r1(rect.width / 2 - r.w / 2), y: r1(rect.height / 2 - r.h / 2) };
+        const k = Math.min(1, (rect.width * 0.9) / r.w, (rect.height * 0.8) / r.h);   // a very wide formula is made to fit
+        const W = r1(r.w * k), H = r1(r.h * k);
+        const spot = freeSpot(rect.width / 2 - W / 2, rect.height / 2 - H / 2, W, H);
+        const it = { id: nid++, k: 'math', c: d.c, src, svg: r.svg, bw: r.w, bh: r.h, W, H, x: spot.x, y: spot.y };
+        if (k < 1) it.fit = 1;
         color = d.c;
         if (tool !== 'select') setTool('select');
         sel = new Set([it.id]);
@@ -2315,7 +2590,7 @@
         toast('Formula added. Drag to move, corners to resize, double-click to edit.', 2800);
       }
     } catch (err) {
-      if (dlg === d) dErr.textContent = err && (err.message === 'offline' || err.message === 'timeout') ? 'Formulas need an internet connection.' : (err && err.message) || 'Could not read that formula.';
+      if (dlg === d) { dErr.textContent = formulaError(err); fIn.focus(); }
     } finally {
       dOk.disabled = false;
     }
@@ -2327,42 +2602,50 @@
   function openGraph(edit) {
     showDialog('graph', edit);
     dlgTitle.textContent = edit ? 'Edit graph' : 'Graph';
-    const f = edit ? edit.f : [];
-    gIns.forEach((inp, i) => { inp.value = f[i] ? f[i].e : ''; });
-    gx0.value = edit ? fmtNum(edit.x0) : '-10';
-    gx1.value = edit ? fmtNum(edit.x1) : '10';
-    gy0.value = edit && typeof edit.y0 === 'number' ? fmtNum(edit.y0) : '';
-    gy1.value = edit && typeof edit.y1 === 'number' ? fmtNum(edit.y1) : '';
+    gIns.forEach((inp) => { inp.value = ''; });
+    (edit ? edit.f : []).forEach((q) => {                     // each line goes back to the row of its own colour
+      let i = GRAPH_COLORS.indexOf(q.c);
+      if (i < 0 || gIns[i].value) i = gIns.findIndex((inp) => !inp.value);
+      if (i >= 0) gIns[i].value = q.e;
+    });
+    const rx = edit && Array.isArray(edit.rx) ? edit.rx : null;   // what the teacher typed, e.g. "2pi"
+    gx0.value = rx ? rx[0] : edit ? fmtNum(edit.x0) : '-10';
+    gx1.value = rx ? rx[1] : edit ? fmtNum(edit.x1) : '10';
+    gy0.value = rx ? rx[2] : edit && typeof edit.y0 === 'number' ? fmtNum(edit.y0) : '';
+    gy1.value = rx ? rx[3] : edit && typeof edit.y1 === 'number' ? fmtNum(edit.y1) : '';
     gIns[0].focus();
     previewGraph();
   }
   const fmtNum = (v) => String(Math.round(v * 1e6) / 1e6);
   function readGraph() {
     const errs = [], f = [];
+    const bad = (msg, el) => errs.push({ msg, el });
     gIns.forEach((inp, i) => {
       const e = inp.value.trim();
       if (!e) return;
       try { compileExpr(e); f.push({ e, c: GRAPH_COLORS[i] }); }
-      catch (err) { errs.push('Line ' + (i + 1) + ': ' + err.message); }
+      catch (err) { bad('Line ' + (i + 1) + ': ' + err.message, inp); }
     });
     let x0 = -10, x1 = 10, y0 = null, y1 = null;
     try {
       const a = evalNumber(gx0.value), b = evalNumber(gx1.value);
       x0 = a == null ? -10 : a; x1 = b == null ? 10 : b;
-      if (!(x1 > x0)) { errs.push('"x to" must be bigger than "x from".'); x0 = -10; x1 = 10; }
-    } catch (err) { errs.push('x range: ' + err.message); }
+      if (!(x1 > x0)) { bad('"x to" must be bigger than "x from".', gx1); x0 = -10; x1 = 10; }
+    } catch (err) { bad('x range: ' + err.message, gx0); }
     try {
       const a = evalNumber(gy0.value), b = evalNumber(gy1.value);
-      if (a != null && b != null) {
-        if (b > a) { y0 = a; y1 = b; } else errs.push('"y to" must be bigger than "y from".');
+      if ((a == null) !== (b == null)) bad('Fill in both y values, or leave both empty for automatic.', a == null ? gy0 : gy1);
+      else if (a != null) {
+        if (b > a) { y0 = a; y1 = b; } else bad('"y to" must be bigger than "y from".', gy1);
       }
-    } catch (err) { errs.push('y range: ' + err.message); }
-    return { f, x0, x1, y0, y1, errs };
+    } catch (err) { bad('y range: ' + err.message, gy0); }
+    const rx = [gx0.value, gx1.value, gy0.value, gy1.value].map((s) => s.trim().slice(0, 40));
+    return { f, x0, x1, y0, y1, errs, rx };
   }
   function previewGraph() {
     if (!dlg || dlg.kind !== 'graph') return;
     const g = readGraph();
-    dErr.textContent = g.errs.join('  ');
+    dErr.textContent = g.errs.map((x) => x.msg).join('  ');
     const w = gPrev.clientWidth || 200, h = gPrev.clientHeight || 150, d = Math.min(window.devicePixelRatio || 1, 2);
     gPrev.width = Math.round(w * d); gPrev.height = Math.round(h * d);
     const c = gPrev.getContext('2d');
@@ -2373,17 +2656,24 @@
   gBox.addEventListener('input', () => { clearTimeout(prevTimer); prevTimer = setTimeout(previewGraph, 120); });
   function submitGraph() {
     const g = readGraph(), d = dlg;
-    if (g.errs.length) { dErr.textContent = g.errs.join('  '); return; }
+    if (g.errs.length) { dErr.textContent = g.errs.map((x) => x.msg).join('  '); g.errs[0].el.focus(); g.errs[0].el.select(); return; }
     closeDialog();
+    cancelGesture(); abortErase();
+    const spec = { f: g.f, x0: g.x0, x1: g.x1, y0: g.y0, y1: g.y1, rx: g.rx };
     if (d.edit) {
       const old = P().items.find((it) => it.id === d.edit.id);
       if (!old) return;
-      commit(P().items.map((it) => (it.id === old.id ? Object.assign({}, it, { f: g.f, x0: g.x0, x1: g.x1, y0: g.y0, y1: g.y1 }) : it)));
+      const near = (a, b) => (a == null && b == null) || (typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) < 1e-6);
+      const same = JSON.stringify(old.f) === JSON.stringify(g.f) && near(old.x0, g.x0) && near(old.x1, g.x1) && near(old.y0, g.y0) && near(old.y1, g.y1) &&
+        (!old.rx || JSON.stringify(old.rx) === JSON.stringify(g.rx));
+      if (same) { renderNow(); return; }
+      commit(P().items.map((it) => (it.id === old.id ? Object.assign({}, it, spec) : it)));
       return;
     }
     rect = board.getBoundingClientRect();
     const W = Math.round(Math.min(rect.width * 0.42, 760)), H = Math.round(Math.min(W * 0.75, rect.height * 0.72));
-    const it = { id: nid++, k: 'graph', f: g.f, x0: g.x0, x1: g.x1, y0: g.y0, y1: g.y1, W, H, x: r1(rect.width / 2 - W / 2), y: r1(rect.height / 2 - H / 2) };
+    const spot = freeSpot(rect.width / 2 - W / 2, rect.height / 2 - H / 2, W, H);
+    const it = Object.assign({ id: nid++, k: 'graph' }, spec, { W, H, x: spot.x, y: spot.y });
     if (tool !== 'select') setTool('select');
     sel = new Set([it.id]);
     commit(P().items.concat([it]));
@@ -2396,8 +2686,10 @@
     const b = e.target.closest('[data-dc]');
     if (!b || !dlg) return;
     dlg.c = b.dataset.dc; syncDlgColors();
-    if (dlg.kind === 'formula') previewFormula();
+    if (dlg.kind === 'formula') { previewFormula(); fIn.focus(); }
   });
+  // clicking the window's background must not take the keyboard away from its text field
+  dlgEl.addEventListener('pointerdown', (e) => { if (!e.target.closest('input, button')) e.preventDefault(); });
   dlgEl.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && typingIn(e.target)) { e.preventDefault(); dOk.click(); }
   });
@@ -2418,6 +2710,8 @@
   function drawGridOn(g, w, h) {
     if (grid === 'off') return;
     const G = gridStep();
+    g.save();
+    g.globalCompositeOperation = 'source-over';
     if (grid === 'sq') {
       g.fillStyle = '#e3e9f3';
       for (let x = 0; x < w; x += G) g.fillRect(x, 0, 1, h);
@@ -2427,8 +2721,11 @@
       for (let y = 0; y < h; y += G * 5) g.fillRect(0, y, w, 1);
     } else {
       g.fillStyle = '#a9b3c2';
-      for (let y = 0; y <= h; y += G) for (let x = 0; x <= w; x += G) { g.beginPath(); g.arc(x, y, 1.5, 0, Math.PI * 2); g.fill(); }
+      g.beginPath();
+      for (let y = 0; y <= h; y += G) for (let x = 0; x <= w; x += G) { g.moveTo(x + 1.5, y); g.arc(x, y, 1.5, 0, Math.PI * 2); }
+      g.fill();
     }
+    g.restore();
   }
   function exportCanvas() {
     finishText();
@@ -2457,17 +2754,29 @@
     }
   }
   const blobToDataURL = (blob) => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
+  // Saves without closing a text that is being typed (it is included, and you can keep typing).
   async function saveLesson() {
-    finishText();
+    const list = pagesForSave();
     const used = new Set();
-    pages.forEach((pg) => pg.items.forEach((it) => { if (it.k === 'img') used.add(it.src); }));
+    list.forEach((items) => items.forEach((it) => { if (it.k === 'img') used.add(it.src); }));
     const images = {};
     for (const id of used) { const im = imgs.get(id); if (im) images[id] = await blobToDataURL(im.blob); }
-    const data = { app: 'math-board', v: 1, grid, pages: pages.map((pg) => pg.items.map(strip)), images };
+    const data = { app: 'math-board', v: 1, grid, pages: list, images };
     download(new Blob([JSON.stringify(data)], { type: 'application/json' }), 'lesson-' + stamp() + '.json');
     toast('Lesson saved (' + pages.length + (pages.length === 1 ? ' page' : ' pages') + '). Open it again with Open lesson.', 3200);
+    if (editing) ed.focus({ preventScroll: true });
   }
   function strip(it) { const o = Object.assign({}, it); delete o.id; return o; }
+  function pagesForSave() {                                // every page's items, plus a text still being typed
+    const list = pages.map((pg) => pg.items.map(strip));
+    if (editing) {
+      const t = ed.value.replace(/\s+$/, ''), e = editing;
+      const i = e.orig ? P().items.findIndex((it) => it.id === e.orig.id) : -1;
+      if (t && i >= 0) list[cur][i] = Object.assign(strip(P().items[i]), { t, s: e.s, c: e.c, x: e.x, y: e.y });
+      else if (t && !e.orig) list[cur].push({ k: 'text', c: e.c, s: e.s, x: e.x, y: e.y, t });
+    }
+    return list;
+  }
   fileLesson.addEventListener('change', () => {
     const f = fileLesson.files && fileLesson.files[0];
     fileLesson.value = '';
@@ -2496,8 +2805,10 @@
       return { items, past: [], future: [] };
     });
     if (!fresh.length) { toast('That lesson has no pages.'); return; }
-    finishText(); cancelGesture();
-    if (pages.every((pg) => !pg.items.length)) { pages.splice(0, pages.length, ...fresh); cur = 0; }
+    finishText(); cancelGesture(); abortErase();
+    pageTrash = null;                    // Undo must not slot an old deleted page into the lesson
+    // replace the board only if it is truly unused (a cleared board can still be brought back with Undo)
+    if (pages.every((pg) => !pg.items.length && !pg.past.length && !pg.future.length)) { pages.splice(0, pages.length, ...fresh); cur = 0; }
     else { pages.splice(cur + 1, 0, ...fresh); cur = cur + 1; }
     if (['off', 'sq', 'dot'].indexOf(data.grid) >= 0) setGrid(data.grid);
     sel.clear();
@@ -2537,12 +2848,14 @@
       case 'math':
         if (!box() || typeof o.svg !== 'string' || o.svg.indexOf('<svg') !== 0 || typeof o.src !== 'string') return null;
         it = { k: 'math', c: col(o.c), src: o.src, svg: o.svg, bw: num(o.bw) && o.bw > 0 ? o.bw : o.W, bh: num(o.bh) && o.bh > 0 ? o.bh : o.H, x: o.x, y: o.y, W: o.W, H: o.H };
+        if (o.fit) it.fit = 1;
         break;
       case 'graph': {
         if (!box() || !num(o.x0) || !num(o.x1) || !(o.x1 > o.x0)) return null;
         const f = (Array.isArray(o.f) ? o.f : []).filter((q) => q && typeof q.e === 'string').slice(0, 3).map((q, i) => ({ e: q.e.slice(0, 500), c: col(q.c || GRAPH_COLORS[i]) }));
         const manual = num(o.y0) && num(o.y1) && o.y1 > o.y0;
         it = { k: 'graph', f, x0: o.x0, x1: o.x1, y0: manual ? o.y0 : null, y1: manual ? o.y1 : null, x: o.x, y: o.y, W: o.W, H: o.H };
+        if (Array.isArray(o.rx) && o.rx.length === 4 && o.rx.every((s) => typeof s === 'string')) it.rx = o.rx.map((s) => s.slice(0, 40));
         break;
       }
       default: return null;
@@ -2590,7 +2903,7 @@
     if (!d) return;
     const keep = new Set();
     pages.forEach((pg) => pg.items.forEach((it) => { if (it.k === 'img') keep.add(it.src); }));
-    const old = Date.now() - 3 * 864e5;
+    const old = Date.now() - 30 * 864e5;              // pictures in use are re-stamped on every reload
     try {
       const q = d.transaction('kv', 'readwrite').objectStore('kv').openCursor();
       q.onsuccess = () => {
@@ -2612,8 +2925,9 @@
   function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(save, 600); }
   function save() {
     clearTimeout(saveTimer);
+    const list = pagesForSave();                           // text still being typed is kept too
     let json;
-    try { json = JSON.stringify({ v: 1, cur, grid, pages: pages.map((pg) => pg.items.map(strip)) }); } catch (_) { return; }
+    try { json = JSON.stringify({ v: 1, cur, grid, pages: list }); } catch (_) { return; }
     try { sessionStorage.setItem(SKEY, json); }
     catch (_) {
       try { sessionStorage.setItem(SKEY, 'idb'); } catch (__) {}
@@ -2630,7 +2944,9 @@
     if (['off', 'sq', 'dot'].indexOf(d.grid) >= 0) setGrid(d.grid);
     const ids = new Set();
     pages.forEach((pg) => pg.items.forEach((it) => { if (it.k === 'img') ids.add(it.src); }));
-    ids.forEach((id) => idbGet('img:' + id).then((r) => { if (r && r.blob) registerImage(id, r.blob); }));
+    ids.forEach((id) => idbGet('img:' + id).then((r) => {
+      if (r && r.blob) { registerImage(id, r.blob); idbPut('img:' + id, { blob: r.blob, t: Date.now() }); }
+    }));
   }
   function restore() {
     let raw = null;
@@ -2677,7 +2993,8 @@
   document.addEventListener('selectstart', (e) => { if (!editable(e.target)) e.preventDefault(); });
   document.addEventListener('gesturestart', (e) => e.preventDefault());
   document.addEventListener('dblclick', (e) => { if (!editable(e.target)) e.preventDefault(); });
-  document.addEventListener('touchmove', (e) => { if (!editable(e.target)) e.preventDefault(); }, { passive: false });
+  const scrollable = (t) => !!t && !!t.closest && !!t.closest('#tray, #dlg');     // these two may scroll on small screens
+  document.addEventListener('touchmove', (e) => { if (!editable(e.target) && !scrollable(e.target)) e.preventDefault(); }, { passive: false });
   document.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
 
   // ======================================================================
@@ -2695,8 +3012,10 @@
   //  start
   // ======================================================================
   restore();
+  snapBar();
   if (window.ResizeObserver) new ResizeObserver(resize).observe(board);
-  window.addEventListener('resize', resize);
+  window.addEventListener('resize', () => { snapBar(); resize(); });
+  board.addEventListener('scroll', () => { board.scrollLeft = 0; board.scrollTop = 0; });
   resize();
   updateButtons();
   setTool('pen');
